@@ -39,9 +39,17 @@ impl VpnManager {
     }
 
     pub async fn install_if_needed() -> Result<()> {
+        // 检查并安装 WireGuard
         if !CommandExecutor::check_wireguard_installed()? {
             CommandExecutor::install_wireguard()?;
         }
+
+        // 检查并安装 resolvconf
+        if !CommandExecutor::check_resolvconf_installed()? {
+            eprintln!("Installing resolvconf...");
+            CommandExecutor::install_resolvconf()?;
+        }
+
         Ok(())
     }
 

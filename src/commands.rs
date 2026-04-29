@@ -12,6 +12,37 @@ impl CommandExecutor {
         Ok(output.map_or(false, |o| o.status.success()))
     }
 
+    pub fn check_resolvconf_installed() -> Result<bool> {
+        let output = Command::new("which")
+            .arg("resolvconf")
+            .output();
+
+        Ok(output.map_or(false, |o| o.status.success()))
+    }
+
+    pub fn install_resolvconf() -> Result<()> {
+        let distro = Self::detect_distro()?;
+
+        let cmd = match distro.as_str() {
+            "ubuntu" | "debian" => "sudo apt-get update && sudo apt-get install -y resolvconf",
+            "fedora" => "sudo dnf install -y systemd-resolved && sudo ln -sf /usr/bin/resolvectl /usr/local/bin/resolvconf",
+            "arch" => "sudo pacman -S --noconfirm openresolv",
+            "opensuse" => "sudo zypper install -y openresolv",
+            _ => return Err(anyhow!("Unsupported Linux distribution: {}", distro)),
+        };
+
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .status()?;
+
+        if !status.success() {
+            return Err(anyhow!("Failed to install resolvconf"));
+        }
+
+        Ok(())
+    }
+
     pub fn install_wireguard() -> Result<()> {
         let distro = Self::detect_distro()?;
 
@@ -42,12 +73,16 @@ impl CommandExecutor {
             .arg(config_name)
             .output()?;
 
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("Failed to connect: {}", stderr));
+            // 合并 stdout 和 stderr 来获取完整错误信息
+            let full_output = format!("{}\n{}", stdout, stderr).trim().to_string();
+            return Err(anyhow!("Failed to connect:\n{}", full_output));
         }
 
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        Ok(stdout.to_string())
     }
 
     pub fn disconnect_vpn(config_name: &str) -> Result<String> {
