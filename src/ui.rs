@@ -428,21 +428,29 @@ fn draw_import(f: &mut Frame, app: &App) {
 
         f.render_widget(loading, chunks[1]);
     } else if app.import_configs.is_empty() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
+        let scan_path = format!("{}/Downloads", home);
+
         let empty = vec![
             Line::from(""),
             Line::from(vec![
-                Span::styled("No WireGuard configurations found in ~/Downloads/", Style::default().fg(Color::Yellow)),
+                Span::styled("No .conf files found", Style::default().fg(Color::Yellow)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Scanned path: ", Style::default().fg(Color::Cyan)),
+                Span::styled(&scan_path, Style::default().fg(Color::White)),
             ]),
             Line::from(""),
             Line::from("Steps to import configs:"),
-            Line::from("  1. Press 'o' to open download page in browser"),
-            Line::from("  2. Login with your StrongVPN credentials"),
-            Line::from("  3. Download server configs (*.conf files)"),
+            Line::from("  1. Press 'o' to view download info"),
+            Line::from("  2. Copy URL and credentials to browser"),
+            Line::from("  3. Download server configs to ~/Downloads/"),
             Line::from("  4. Press 'i' again to import them"),
             Line::from(""),
             Line::from(vec![
                 Span::styled("Tip: ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                Span::raw("Any .conf files in Downloads folder will be detected"),
+                Span::raw("Any .conf files in Downloads will be detected"),
             ]),
         ];
 

@@ -80,10 +80,14 @@ impl CommandExecutor {
     }
 
     pub fn get_active_vpn() -> Result<Option<String>> {
-        let output = Command::new("ip")
+        // 尝试获取活动 VPN 连接，如果失败返回 None
+        let output = match Command::new("ip")
             .arg("link")
             .arg("show")
-            .output()?;
+            .output() {
+                Ok(o) => o,
+                Err(_) => return Ok(None),  // 命令执行失败，返回 None
+            };
 
         if !output.status.success() {
             return Ok(None);

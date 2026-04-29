@@ -11,13 +11,31 @@ pub struct ConfigDownloader {
 
 impl ConfigDownloader {
     pub fn new() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        // 获取真实用户的 HOME 目录（处理 sudo 的情况）
+        let home = Self::get_real_home();
         let downloads_dir = PathBuf::from(home).join("Downloads");
 
         Self {
             download_url: "https://tools.strongvpn.asia/share/strong-wg/strong-wg.html".to_string(),
             downloads_dir,
         }
+    }
+
+    /// 获取真实用户的 HOME 目录（处理 sudo 情况）
+    fn get_real_home() -> String {
+        // 如果用 sudo 运行，SUDO_USER 会包含真实用户名
+        if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+            // 尝试从 SUDO 环境变量获取真实用户的 HOME
+            if let Ok(sudo_home) = std::env::var("SUDO_HOME") {
+                return sudo_home;
+            }
+
+            // 如果没有 SUDO_HOME，构建路径
+            return format!("/home/{}", sudo_user);
+        }
+
+        // 没有用 sudo，使用当前 HOME
+        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
     }
 
     /// 获取下载页面 URL
@@ -29,7 +47,11 @@ impl ConfigDownloader {
     pub fn scan_downloads(&self) -> Result<Vec<PathBuf>> {
         let mut configs = Vec::new();
 
+        eprintln!("DEBUG: Scanning directory: {:?}", self.downloads_dir);
+        eprintln!("DEBUG: Directory exists: {}", self.downloads_dir.exists());
+
         if !self.downloads_dir.exists() {
+            eprintln!("DEBUG: Downloads directory does not exist");
             return Ok(configs);
         }
 
@@ -37,15 +59,20 @@ impl ConfigDownloader {
             let entry = entry?;
             let path = entry.path();
 
+            eprintln!("DEBUG: Found file: {:?}", path);
+
             if path.is_file() {
                 if let Some(ext) = path.extension() {
+                    eprintln!("DEBUG: Extension: {:?}", ext);
                     if ext == "conf" {
-                        // 包含所有 .conf 文件
+                        eprintln!("DEBUG: Adding config: {:?}", path);
                         configs.push(path);
                     }
                 }
             }
         }
+
+        eprintln!("DEBUG: Total configs found: {}", configs.len());
 
         // 按修改时间排序，最新的在前面
         configs.sort_by(|a, b| {

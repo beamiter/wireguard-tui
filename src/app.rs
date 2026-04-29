@@ -48,7 +48,12 @@ impl App {
         let mut servers = config_manager.list_configs()?;
         servers.sort();
 
-        let active_server = VpnManager::get_active_connection().await.ok().flatten();
+        // 尝试获取活动连接，失败也没关系
+        let active_server = VpnManager::get_active_connection()
+            .await
+            .ok()
+            .flatten()
+            .or(None);
 
         // Check if credentials are still default template values
         let credentials_configured = !config.username.is_empty()
@@ -127,11 +132,16 @@ impl App {
         self.current_screen = Screen::Import;
         self.loading = true;
 
+        // 获取 Downloads 路径用于显示
+        let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
+        let downloads_path = format!("{}/Downloads", home);
+
         // 扫描 Downloads 目录
         match self.downloader.scan_downloads() {
             Ok(configs) => {
+                eprintln!("DEBUG: scan_downloads returned {} files", configs.len());
                 if configs.is_empty() {
-                    self.set_error("No .conf files found in ~/Downloads/. Download them first by pressing 'o'.");
+                    self.set_error(format!("No .conf files found in {}. Download them first by pressing 'o'.", downloads_path));
                     self.loading = false;
                     self.current_screen = Screen::Main;
                 } else {
@@ -145,7 +155,8 @@ impl App {
                 }
             }
             Err(e) => {
-                self.set_error(format!("Failed to scan downloads: {}", e));
+                eprintln!("DEBUG: scan_downloads error: {}", e);
+                self.set_error(format!("Failed to scan {}: {}", downloads_path, e));
                 self.loading = false;
                 self.current_screen = Screen::Main;
             }

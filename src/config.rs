@@ -121,19 +121,34 @@ auto_download = true
 
     pub fn list_configs(&self) -> Result<Vec<String>> {
         let mut configs = Vec::new();
-        if self.wg_config_dir.exists() {
-            for entry in fs::read_dir(&self.wg_config_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "conf") {
-                    if let Some(name) = path.file_stem() {
-                        if let Some(name_str) = name.to_str() {
-                            configs.push(name_str.to_string());
+
+        // 检查目录是否存在且可读
+        if !self.wg_config_dir.exists() {
+            return Ok(configs);
+        }
+
+        // 尝试读取目录，如果权限不足则返回空列表而不是错误
+        match fs::read_dir(&self.wg_config_dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    if let Ok(entry) = entry {
+                        let path = entry.path();
+                        if path.extension().map_or(false, |ext| ext == "conf") {
+                            if let Some(name) = path.file_stem() {
+                                if let Some(name_str) = name.to_str() {
+                                    configs.push(name_str.to_string());
+                                }
+                            }
                         }
                     }
                 }
             }
+            Err(_) => {
+                // 权限不足，返回空列表
+                eprintln!("Warning: Cannot read /etc/wireguard/ - need sudo to manage VPN configs");
+            }
         }
+
         configs.sort();
         Ok(configs)
     }
