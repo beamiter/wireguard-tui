@@ -63,11 +63,23 @@ async fn run(mut app: app::App) -> Result<()> {
                                     app.import_selected += 1;
                                 }
                             }
+                            KeyCode::Char(' ') => {
+                                app.handle_toggle_check();
+                            }
                             KeyCode::Enter => {
                                 app.handle_import_selected().await?;
                             }
                             KeyCode::Char('a') => {
-                                app.handle_import_all().await?;
+                                // 全选
+                                for i in 0..app.import_checked.len() {
+                                    app.import_checked[i] = true;
+                                }
+                            }
+                            KeyCode::Char('n') => {
+                                // 全不选
+                                for i in 0..app.import_checked.len() {
+                                    app.import_checked[i] = false;
+                                }
                             }
                             _ => {}
                         }
@@ -80,7 +92,7 @@ async fn run(mut app: app::App) -> Result<()> {
                             KeyCode::Up => app.handle_up(),
                             KeyCode::Down => app.handle_down(),
                             KeyCode::Enter => app.handle_enter().await?,
-                            KeyCode::Char('o') => app.handle_open_browser().await?,
+                            KeyCode::Char('o') => app.handle_show_download_info().await?,
                             KeyCode::Char('i') => app.handle_import().await?,
                             KeyCode::Char('d') => app.handle_delete().await?,
                             KeyCode::Char('s') => app.handle_status().await?,

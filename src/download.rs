@@ -20,36 +20,12 @@ impl ConfigDownloader {
         }
     }
 
-    /// 在浏览器中打开下载页面
-    pub fn open_in_browser(&self) -> Result<()> {
-        #[cfg(target_os = "linux")]
-        {
-            Command::new("xdg-open")
-                .arg(&self.download_url)
-                .spawn()
-                .map_err(|e| anyhow!("Failed to open browser: {}", e))?;
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            Command::new("open")
-                .arg(&self.download_url)
-                .spawn()
-                .map_err(|e| anyhow!("Failed to open browser: {}", e))?;
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            Command::new("cmd")
-                .args(&["/C", "start", &self.download_url])
-                .spawn()
-                .map_err(|e| anyhow!("Failed to open browser: {}", e))?;
-        }
-
-        Ok(())
+    /// 获取下载页面 URL
+    pub fn get_download_url(&self) -> &str {
+        &self.download_url
     }
 
-    /// 扫描 Downloads 目录，查找 WireGuard 配置文件
+    /// 扫描 Downloads 目录，查找所有 WireGuard 配置文件
     pub fn scan_downloads(&self) -> Result<Vec<PathBuf>> {
         let mut configs = Vec::new();
 
@@ -64,14 +40,8 @@ impl ConfigDownloader {
             if path.is_file() {
                 if let Some(ext) = path.extension() {
                     if ext == "conf" {
-                        // 检查是否是 str-*.conf 格式
-                        if let Some(filename) = path.file_name() {
-                            if let Some(name) = filename.to_str() {
-                                if name.starts_with("str-") && name.ends_with(".conf") {
-                                    configs.push(path);
-                                }
-                            }
-                        }
+                        // 包含所有 .conf 文件
+                        configs.push(path);
                     }
                 }
             }

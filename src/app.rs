@@ -37,6 +37,7 @@ pub struct App {
     pub last_update: Instant,
     pub import_configs: Vec<std::path::PathBuf>,
     pub import_selected: usize,
+    pub import_checked: Vec<bool>,
 }
 
 impl App {
@@ -78,6 +79,7 @@ impl App {
             last_update: Instant::now(),
             import_configs: Vec::new(),
             import_selected: 0,
+            import_checked: Vec::new(),
         };
 
         VpnManager::install_if_needed().await.ok();
@@ -114,16 +116,9 @@ impl App {
         Ok(())
     }
 
-    /// 在浏览器中打开下载页面
-    pub async fn handle_open_browser(&mut self) -> Result<()> {
-        match self.downloader.open_in_browser() {
-            Ok(_) => {
-                self.set_success("Opened download page in browser. Download configs and press 'i' to import.");
-            }
-            Err(e) => {
-                self.set_error(format!("Failed to open browser: {}", e));
-            }
-        }
+    /// 显示下载信息
+    pub async fn handle_show_download_info(&mut self) -> Result<()> {
+        self.current_screen = Screen::Download;
         Ok(())
     }
 
@@ -136,14 +131,17 @@ impl App {
         match self.downloader.scan_downloads() {
             Ok(configs) => {
                 if configs.is_empty() {
-                    self.set_error("No WireGuard configs found in ~/Downloads/. Download them first by pressing 'o'.");
+                    self.set_error("No .conf files found in ~/Downloads/. Download them first by pressing 'o'.");
                     self.loading = false;
                     self.current_screen = Screen::Main;
                 } else {
+                    let count = configs.len();
                     self.import_configs = configs;
                     self.import_selected = 0;
+                    // 初始化选中状态，默认全部选中
+                    self.import_checked = vec![true; count];
                     self.loading = false;
-                    self.set_info(format!("Found {} config(s). Use ↑↓ to select, Enter to import, Esc to cancel.", self.import_configs.len()));
+                    self.set_info(format!("Found {} config(s). Use Space to check/uncheck, Enter to import selected.", count));
                 }
             }
             Err(e) => {
@@ -156,41 +154,36 @@ impl App {
         Ok(())
     }
 
+    /// 切换当前项的选中状态
+    pub fn handle_toggle_check(&mut self) {
+        if self.import_selected < self.import_checked.len() {
+            self.import_checked[self.import_selected] = !self.import_checked[self.import_selected];
+        }
+    }
+
     /// 导入选中的配置文件
     pub async fn handle_import_selected(&mut self) -> Result<()> {
         if self.import_configs.is_empty() {
             return Ok(());
         }
 
-        let selected_path = &self.import_configs[self.import_selected].clone();
-
         self.loading = true;
 
-        match self.downloader.import_config(selected_path, self.config_manager.get_wg_config_dir()) {
-            Ok(filename) => {
-                self.servers = self.config_manager.list_configs()?;
-                self.servers.sort();
-                self.set_success(format!("Imported {}", filename));
-                self.current_screen = Screen::Main;
-            }
-            Err(e) => {
-                self.set_error(format!("Failed to import: {}", e));
-            }
-        }
+        // 收集所有选中的文件
+        let selected_paths: Vec<_> = self.import_configs
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| self.import_checked.get(*idx).copied().unwrap_or(false))
+            .map(|(_, path)| path.clone())
+            .collect();
 
-        self.loading = false;
-        Ok(())
-    }
-
-    /// 导入所有找到的配置文件
-    pub async fn handle_import_all(&mut self) -> Result<()> {
-        if self.import_configs.is_empty() {
+        if selected_paths.is_empty() {
+            self.set_error("No files selected. Use Space to check files.");
+            self.loading = false;
             return Ok(());
         }
 
-        self.loading = true;
-
-        match self.downloader.import_configs(&self.import_configs, self.config_manager.get_wg_config_dir()) {
+        match self.downloader.import_configs(&selected_paths, self.config_manager.get_wg_config_dir()) {
             Ok(imported) => {
                 self.servers = self.config_manager.list_configs()?;
                 self.servers.sort();

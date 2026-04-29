@@ -32,18 +32,25 @@
 
 ### 详细步骤
 
-#### 步骤 1：打开下载页面
+#### 步骤 1：查看下载信息
 
-在 TUI 中按 `o`：
+在 TUI 中按 `o`，显示：
 
 ```
-┌────────────────────────────────────────────────┐
-│ ✓ Opened download page in browser.            │
-│   Download configs and press 'i' to import.   │
+┌─ Download Instructions ────────────────────────┐
+│ Step 1: Open this URL in your browser:        │
+│   https://tools.strongvpn.asia/share/...      │
+│                                                │
+│ Step 2: Login with your credentials:          │
+│   Username: a314393                            │
+│   Password: L7W8cXG3MH                         │
+│                                                │
+│ Step 3: Download server configs                │
+│ Step 4: Press 'i' to import                    │
 └────────────────────────────────────────────────┘
 ```
 
-浏览器自动打开：`https://tools.strongvpn.asia/share/strong-wg/strong-wg.html`
+复制 URL、用户名、密码到浏览器手动操作
 
 #### 步骤 2：在浏览器下载
 

@@ -18,23 +18,42 @@ WireGuard TUI 现在支持**浏览器集成**和**配置文件导入**！不再�
 
 ## 📖 详细步骤
 
-### 步骤 1：打开下载页面
+### 步骤 1：查看下载信息
 
 在 TUI 主界面按 `o` 键：
 
 ```
-┌────────────────────────────────────────────────┐
-│ 🔒 WireGuard VPN Manager                       │
+┌─ Download Instructions ────────────────────────┐
 │                                                │
-│ Available Servers: (empty)                     │
+│ Step 1: Open this URL in your browser:        │
 │                                                │
-│ ✓ Opened download page in browser.            │
-│   Download configs and press 'i' to import.   │
+│   https://tools.strongvpn.asia/share/...      │
+│                                                │
+│ ──────────────────────────────────────────────│
+│                                                │
+│ Step 2: Login with your credentials:          │
+│                                                │
+│   Username: a314393                            │
+│   Password: L7W8cXG3MH                         │
+│                                                │
+│ ──────────────────────────────────────────────│
+│                                                │
+│ Step 3: Download server configs                │
+│   • Select servers you want                    │
+│   • Download to ~/Downloads/                   │
+│   • Files format: str-*.conf                   │
+│                                                │
+│ ──────────────────────────────────────────────│
+│                                                │
+│ Step 4: Press 'i' to import                    │
+│                                                │
+│ Press Esc to return                            │
 └────────────────────────────────────────────────┘
 ```
 
-**自动发生：**
-- 默认浏览器打开 `https://tools.strongvpn.asia/share/strong-wg/strong-wg.html`
+**你需要做：**
+- 复制 URL 到浏览器
+- 复制用户名和密码登录
 
 ### 步骤 2：在浏览器中下载
 

@@ -83,8 +83,9 @@ password = "your-actual-password"  # 改为你的 StrongVPN 密码
 
 #### 1. 下载配置文件（浏览器 + 导入）
 
-**步骤 1：** 按 `o` 在浏览器打开下载页面
-- 自动打开 https://tools.strongvpn.asia/share/strong-wg/strong-wg.html
+**步骤 1：** 按 `o` 查看下载信息
+- 显示下载 URL、用户名、密码
+- 复制信息到浏览器手动操作
 
 **步骤 2：** 在浏览器中下载
 - 输入你的 StrongVPN 凭证登录
@@ -92,10 +93,12 @@ password = "your-actual-password"  # 改为你的 StrongVPN 密码
 - 下载 `.conf` 文件到 `~/Downloads/`
 
 **步骤 3：** 按 `i` 导入配置
-- 应用扫描 `~/Downloads/` 目录
-- 显示找到的配置文件列表
-- 用 `↑↓` 选择，`Enter` 导入
-- 或按 `a` 导入全部
+- 应用扫描 `~/Downloads/` 目录所有 .conf 文件
+- 显示文件列表，默认全部勾选
+- 用 `↑↓` 移动光标
+- 用 `Space` 切换勾选/取消勾选
+- 按 `a` 全选，`n` 全不选
+- 按 `Enter` 导入所有勾选的文件
 
 💡 **提示：** 详细说明请查看 [BROWSER_IMPORT.md](BROWSER_IMPORT.md)
 

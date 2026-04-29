@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Gauge},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
 
@@ -148,59 +148,82 @@ fn draw_download(f: &mut Frame, app: &App) {
         .margin(2)
         .constraints(
             [
-                Constraint::Length(5),
+                Constraint::Length(3),
                 Constraint::Min(10),
+                Constraint::Length(3),
             ]
             .as_ref(),
         )
         .split(f.area());
 
-    let title = Paragraph::new("Downloading WireGuard Configurations...")
+    let title = Paragraph::new("Download WireGuard Configurations")
         .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
         .alignment(Alignment::Center);
 
     f.render_widget(title, chunks[0]);
 
-    if app.loading {
-        let gauge = Gauge::default()
-            .block(Block::default().title("Progress").borders(Borders::ALL))
-            .gauge_style(Style::default().fg(Color::Cyan))
-            .percent(50);
+    // 显示下载信息
+    let download_url = app.downloader.get_download_url();
 
-        f.render_widget(gauge, chunks[1]);
-    } else {
-        let message = match &app.message {
-            Message::Success(msg) => {
-                vec![
-                    Line::from(""),
-                    Line::from(vec![
-                        Span::styled("✓ ", Style::default().fg(Color::Green)),
-                        Span::raw(msg),
-                    ]),
-                    Line::from(""),
-                    Line::from("Press any key to continue..."),
-                ]
-            }
-            Message::Error(msg) => {
-                vec![
-                    Line::from(""),
-                    Line::from(vec![
-                        Span::styled("✗ ", Style::default().fg(Color::Red)),
-                        Span::raw(msg),
-                    ]),
-                    Line::from(""),
-                    Line::from("Press any key to continue..."),
-                ]
-            }
-            _ => vec![Line::from("Initializing download...")],
-        };
+    let info_lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Step 1: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw("Open this URL in your browser:"),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(download_url, Style::default().fg(Color::Green).add_modifier(Modifier::UNDERLINED)),
+        ]),
+        Line::from(""),
+        Line::from("─".repeat(70)),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Step 2: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw("Login with your credentials:"),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Username: ", Style::default().fg(Color::Cyan)),
+            Span::styled(&app.username, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Password: ", Style::default().fg(Color::Cyan)),
+            Span::styled(&app.password, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from("─".repeat(70)),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Step 3: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw("Download server configs (*.conf files)"),
+        ]),
+        Line::from(""),
+        Line::from("  • Select servers you want"),
+        Line::from("  • Download to ~/Downloads/"),
+        Line::from("  • Files format: str-*.conf (e.g., str-zrh302.conf)"),
+        Line::from(""),
+        Line::from("─".repeat(70)),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Step 4: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled("Return to this TUI and press 'i' to import", Style::default().fg(Color::Green)),
+        ]),
+        Line::from(""),
+    ];
 
-        let paragraph = Paragraph::new(message)
-            .block(Block::default().borders(Borders::ALL))
-            .alignment(Alignment::Center);
+    let paragraph = Paragraph::new(info_lines)
+        .block(Block::default().title("Download Instructions").borders(Borders::ALL))
+        .alignment(Alignment::Left);
 
-        f.render_widget(paragraph, chunks[1]);
-    }
+    f.render_widget(paragraph, chunks[1]);
+
+    let help = Paragraph::new("Press Esc to return to main screen")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+
+    f.render_widget(help, chunks[2]);
 }
 
 fn draw_status(f: &mut Frame, app: &App) {
@@ -419,7 +442,7 @@ fn draw_import(f: &mut Frame, app: &App) {
             Line::from(""),
             Line::from(vec![
                 Span::styled("Tip: ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                Span::raw("Files must be in Downloads folder and named like str-*.conf"),
+                Span::raw("Any .conf files in Downloads folder will be detected"),
             ]),
         ];
 
@@ -437,29 +460,47 @@ fn draw_import(f: &mut Frame, app: &App) {
             .enumerate()
             .map(|(idx, path)| {
                 let is_selected = idx == app.import_selected;
+                let is_checked = app.import_checked.get(idx).copied().unwrap_or(false);
                 let info = ConfigDownloader::format_config_info(path);
 
-                let content = if is_selected {
-                    format!("▶ {}", info)
+                // 复选框符号
+                let checkbox = if is_checked {
+                    "[✓]"
                 } else {
-                    format!("  {}", info)
+                    "[ ]"
                 };
+
+                // 选择指示器
+                let indicator = if is_selected {
+                    "▶"
+                } else {
+                    " "
+                };
+
+                let content = format!("{} {} {}", indicator, checkbox, info);
 
                 let style = if is_selected {
                     Style::default()
                         .bg(Color::DarkGray)
-                        .fg(Color::White)
+                        .fg(if is_checked { Color::Green } else { Color::White })
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(if is_checked { Color::Green } else { Color::White })
                 };
 
                 ListItem::new(content).style(style)
             })
             .collect();
 
+        let checked_count = app.import_checked.iter().filter(|&&x| x).count();
+        let title = format!(
+            "Found {} config(s) - {} selected",
+            app.import_configs.len(),
+            checked_count
+        );
+
         let list = List::new(items)
             .block(Block::default()
-                .title(format!("Found {} config(s) in ~/Downloads", app.import_configs.len()))
+                .title(title)
                 .borders(Borders::ALL))
             .style(Style::default().fg(Color::White));
 
@@ -469,9 +510,9 @@ fn draw_import(f: &mut Frame, app: &App) {
     let help_text = if app.loading {
         "Loading...".to_string()
     } else if app.import_configs.is_empty() {
-        "Press Esc or 'o' to go back and open download page".to_string()
+        "Press Esc to go back | Press 'o' to view download info".to_string()
     } else {
-        "↑↓: Select | Enter: Import selected | a: Import all | Esc: Cancel".to_string()
+        "↑↓: Navigate | Space: Check/Uncheck | a: Check All | n: Uncheck All | Enter: Import | Esc: Cancel".to_string()
     };
 
     let help = Paragraph::new(help_text)
