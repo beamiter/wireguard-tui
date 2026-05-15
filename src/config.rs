@@ -24,7 +24,6 @@ impl Default for AppConfig {
 }
 
 pub struct ConfigManager {
-    config_dir: PathBuf,
     config_path: PathBuf,
     wg_config_dir: PathBuf,
 }
@@ -34,14 +33,13 @@ impl ConfigManager {
         let proj_dirs = ProjectDirs::from("org", "wireguard", "wireguard-tui")
             .ok_or_else(|| anyhow::anyhow!("Failed to get project directories"))?;
 
-        let config_dir = proj_dirs.config_dir().to_path_buf();
+        let config_dir = proj_dirs.config_dir();
         let config_path = config_dir.join("config.toml");
         let wg_config_dir = PathBuf::from("/etc/wireguard");
 
-        fs::create_dir_all(&config_dir)?;
+        fs::create_dir_all(config_dir)?;
 
         let manager = Self {
-            config_dir,
             config_path,
             wg_config_dir,
         };
@@ -88,10 +86,6 @@ auto_download = true
 "#;
 
         fs::write(&self.config_path, template)?;
-
-        println!("✓ Created config template at: {}", self.config_path.display());
-        println!("⚠️  Please edit the file with your actual StrongVPN credentials!");
-
         Ok(())
     }
 
@@ -103,12 +97,6 @@ auto_download = true
         let content = fs::read_to_string(&self.config_path)?;
         let config = toml::from_str(&content)?;
         Ok(config)
-    }
-
-    pub fn save_config(&self, config: &AppConfig) -> Result<()> {
-        let content = toml::to_string_pretty(config)?;
-        fs::write(&self.config_path, content)?;
-        Ok(())
     }
 
     pub fn get_config_path_str(&self) -> String {
@@ -145,7 +133,6 @@ auto_download = true
             }
             Err(_) => {
                 // 权限不足，返回空列表
-                eprintln!("Warning: Cannot read /etc/wireguard/ - need sudo to manage VPN configs");
             }
         }
 

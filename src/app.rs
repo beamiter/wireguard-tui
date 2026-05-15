@@ -10,7 +10,6 @@ pub enum Screen {
     Download,
     Import,
     Status,
-    Settings,
 }
 
 #[derive(Debug, Clone)]
@@ -52,14 +51,11 @@ impl App {
         let active_server = VpnManager::get_active_connection()
             .await
             .ok()
-            .flatten()
-            .or(None);
+            .flatten();
 
-        // Check if credentials are still default template values
+        // Check if credentials are configured
         let credentials_configured = !config.username.is_empty()
-            && config.username != "a314393"
-            && !config.password.is_empty()
-            && config.password != "L7W8cXG3MH";
+            && !config.password.is_empty();
 
         let initial_message = if !credentials_configured {
             let config_path = config_manager.get_config_path_str();
@@ -110,12 +106,12 @@ impl App {
             return Ok(());
         }
 
-        let server = &self.servers[self.selected_index].clone();
+        let server = self.servers[self.selected_index].clone();
 
-        if Some(server) == self.active_server.as_ref() {
-            self.disconnect_vpn(server).await?;
+        if self.active_server.as_ref() == Some(&server) {
+            self.disconnect_vpn(&server).await?;
         } else {
-            self.connect_vpn(server).await?;
+            self.connect_vpn(&server).await?;
         }
 
         Ok(())
@@ -139,7 +135,6 @@ impl App {
         // 扫描 Downloads 目录
         match self.downloader.scan_downloads() {
             Ok(configs) => {
-                eprintln!("DEBUG: scan_downloads returned {} files", configs.len());
                 if configs.is_empty() {
                     self.set_error(format!("No .conf files found in {}. Download them first by pressing 'o'.", downloads_path));
                     self.loading = false;
@@ -155,7 +150,6 @@ impl App {
                 }
             }
             Err(e) => {
-                eprintln!("DEBUG: scan_downloads error: {}", e);
                 self.set_error(format!("Failed to scan {}: {}", downloads_path, e));
                 self.loading = false;
                 self.current_screen = Screen::Main;
@@ -215,13 +209,13 @@ impl App {
             return Ok(());
         }
 
-        let server = &self.servers[self.selected_index].clone();
+        let server = self.servers[self.selected_index].clone();
 
-        if Some(server) == self.active_server.as_ref() {
-            self.disconnect_vpn(server).await?;
+        if self.active_server.as_ref() == Some(&server) {
+            self.disconnect_vpn(&server).await?;
         }
 
-        let path = self.config_manager.get_config_path(server);
+        let path = self.config_manager.get_config_path(&server);
         std::fs::remove_file(path)?;
 
         self.servers.remove(self.selected_index);
@@ -285,8 +279,7 @@ impl App {
     }
 
     pub async fn tick(&mut self) -> Result<()> {
-        if let Message::None = self.message {
-        } else {
+        if !matches!(self.message, Message::None) {
             if let Some(time) = self.message_time {
                 if time.elapsed().as_secs() > 3 {
                     self.message = Message::None;
@@ -295,11 +288,11 @@ impl App {
             }
         }
 
-        if self.last_update.elapsed().as_secs() >= 2 && self.active_server.is_some() {
+        if self.last_update.elapsed().as_secs() >= 2 {
             if let Some(server) = &self.active_server {
                 self.status = VpnManager::get_status(server).await.unwrap_or_default();
+                self.last_update = Instant::now();
             }
-            self.last_update = Instant::now();
         }
 
         Ok(())

@@ -5,19 +5,17 @@ pub struct CommandExecutor;
 
 impl CommandExecutor {
     pub fn check_wireguard_installed() -> Result<bool> {
-        let output = Command::new("which")
+        Ok(Command::new("which")
             .arg("wg-quick")
-            .output();
-
-        Ok(output.map_or(false, |o| o.status.success()))
+            .output()
+            .map_or(false, |o| o.status.success()))
     }
 
     pub fn check_resolvconf_installed() -> Result<bool> {
-        let output = Command::new("which")
+        Ok(Command::new("which")
             .arg("resolvconf")
-            .output();
-
-        Ok(output.map_or(false, |o| o.status.success()))
+            .output()
+            .map_or(false, |o| o.status.success()))
     }
 
     pub fn install_resolvconf() -> Result<()> {
@@ -73,16 +71,14 @@ impl CommandExecutor {
             .arg(config_name)
             .output()?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
         if !output.status.success() {
-            // 合并 stdout 和 stderr 来获取完整错误信息
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
             let full_output = format!("{}\n{}", stdout, stderr).trim().to_string();
             return Err(anyhow!("Failed to connect:\n{}", full_output));
         }
 
-        Ok(stdout.to_string())
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
     pub fn disconnect_vpn(config_name: &str) -> Result<String> {
@@ -115,24 +111,20 @@ impl CommandExecutor {
     }
 
     pub fn get_active_vpn() -> Result<Option<String>> {
-        // 尝试获取活动 VPN 连接，如果失败返回 None
-        let output = match Command::new("ip")
+        let Some(output) = Command::new("ip")
             .arg("link")
             .arg("show")
-            .output() {
-                Ok(o) => o,
-                Err(_) => return Ok(None),  // 命令执行失败，返回 None
-            };
-
-        if !output.status.success() {
+            .output()
+            .ok()
+            .filter(|o| o.status.success()) else {
             return Ok(None);
-        }
+        };
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
             if line.contains("wireguard") {
-                if let Some(name) = line.split(':').next() {
-                    let name = name.trim_start_matches(|c: char| c.is_numeric() || c == ':');
+                if let Some(name) = line.split(':').nth(1) {
+                    let name = name.trim().trim_start_matches(|c: char| c.is_numeric());
                     return Ok(Some(name.to_string()));
                 }
             }

@@ -47,11 +47,7 @@ impl ConfigDownloader {
     pub fn scan_downloads(&self) -> Result<Vec<PathBuf>> {
         let mut configs = Vec::new();
 
-        eprintln!("DEBUG: Scanning directory: {:?}", self.downloads_dir);
-        eprintln!("DEBUG: Directory exists: {}", self.downloads_dir.exists());
-
         if !self.downloads_dir.exists() {
-            eprintln!("DEBUG: Downloads directory does not exist");
             return Ok(configs);
         }
 
@@ -59,20 +55,10 @@ impl ConfigDownloader {
             let entry = entry?;
             let path = entry.path();
 
-            eprintln!("DEBUG: Found file: {:?}", path);
-
-            if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    eprintln!("DEBUG: Extension: {:?}", ext);
-                    if ext == "conf" {
-                        eprintln!("DEBUG: Adding config: {:?}", path);
-                        configs.push(path);
-                    }
-                }
+            if path.is_file() && path.extension().map_or(false, |ext| ext == "conf") {
+                configs.push(path);
             }
         }
-
-        eprintln!("DEBUG: Total configs found: {}", configs.len());
 
         // 按修改时间排序，最新的在前面
         configs.sort_by(|a, b| {
@@ -87,14 +73,13 @@ impl ConfigDownloader {
     /// 导入配置文件到 WireGuard 目录
     pub fn import_config(&self, source_path: &Path, target_dir: &Path) -> Result<String> {
         if !source_path.exists() {
-            return Err(anyhow!("Source file does not exist: {:?}", source_path));
+            return Err(anyhow!("Source file does not exist"));
         }
 
         let filename = source_path
             .file_name()
-            .ok_or_else(|| anyhow!("Invalid filename"))?
-            .to_str()
-            .ok_or_else(|| anyhow!("Invalid UTF-8 in filename"))?;
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| anyhow!("Invalid filename"))?;
 
         let target_path = target_dir.join(filename);
 
@@ -118,25 +103,14 @@ impl ConfigDownloader {
         let mut imported = Vec::new();
 
         for source_path in source_paths {
-            match self.import_config(source_path, target_dir) {
-                Ok(filename) => {
-                    imported.push(filename);
-                }
-                Err(e) => {
-                    eprintln!("Failed to import {:?}: {}", source_path, e);
-                }
+            if let Ok(filename) = self.import_config(source_path, target_dir) {
+                imported.push(filename);
             }
         }
 
         Ok(imported)
     }
 
-    /// 获取配置文件名（不含路径）
-    pub fn get_config_name(path: &Path) -> Option<String> {
-        path.file_stem()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
-    }
 
     /// 格式化显示配置文件信息
     pub fn format_config_info(path: &Path) -> String {
@@ -144,24 +118,19 @@ impl ConfigDownloader {
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
 
-        let size = fs::metadata(path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let metadata = fs::metadata(path).ok();
+        let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
 
-        let modified = fs::metadata(path)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| {
-                t.duration_since(SystemTime::UNIX_EPOCH).ok()
-            })
-            .map(|d| {
-                let secs = d.as_secs();
-                let now = SystemTime::now()
+        let modified = metadata
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .and_then(|d| {
+                SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-                let diff = now - secs;
-
+                    .ok()
+                    .map(|now| now.as_secs() - d.as_secs())
+            })
+            .map(|diff| {
                 if diff < 60 {
                     format!("{} seconds ago", diff)
                 } else if diff < 3600 {

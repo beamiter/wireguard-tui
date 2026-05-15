@@ -34,10 +34,6 @@ impl Default for VpnStatus {
 pub struct VpnManager;
 
 impl VpnManager {
-    pub async fn check_wireguard() -> Result<bool> {
-        CommandExecutor::check_wireguard_installed()
-    }
-
     pub async fn install_if_needed() -> Result<()> {
         // 检查并安装 WireGuard
         if !CommandExecutor::check_wireguard_installed()? {
@@ -46,7 +42,6 @@ impl VpnManager {
 
         // 检查并安装 resolvconf
         if !CommandExecutor::check_resolvconf_installed()? {
-            eprintln!("Installing resolvconf...");
             CommandExecutor::install_resolvconf()?;
         }
 
@@ -90,36 +85,28 @@ impl VpnManager {
             ..Default::default()
         };
 
-        let re_port = Regex::new(r"Listening port:\s*(\d+)").unwrap();
-        let re_pubkey = Regex::new(r"public key:\s*([^\n]+)").unwrap();
-        let re_endpoint = Regex::new(r"endpoint:\s*([^\n]+)").unwrap();
-        let re_allowed = Regex::new(r"Allowed IPs:\s*([^\n]+)").unwrap();
-        let re_handshake = Regex::new(r"Latest handshake:\s*([^\n]+)").unwrap();
-        let re_transfer = Regex::new(r"transfer:\s*([^\n]+)").unwrap();
-
-        if let Some(cap) = re_port.captures(output) {
+        if let Some(cap) = Regex::new(r"Listening port:\s*(\d+)").unwrap().captures(output) {
             status.listening_port = cap[1].to_string();
         }
 
-        if let Some(cap) = re_pubkey.captures(output) {
+        if let Some(cap) = Regex::new(r"public key:\s*([^\n]+)").unwrap().captures(output) {
             status.public_key = cap[1].trim().to_string();
         }
 
-        if let Some(cap) = re_endpoint.captures(output) {
+        if let Some(cap) = Regex::new(r"endpoint:\s*([^\n]+)").unwrap().captures(output) {
             status.endpoint = cap[1].trim().to_string();
         }
 
-        if let Some(cap) = re_allowed.captures(output) {
+        if let Some(cap) = Regex::new(r"Allowed IPs:\s*([^\n]+)").unwrap().captures(output) {
             status.allowed_ips = cap[1].trim().to_string();
         }
 
-        if let Some(cap) = re_handshake.captures(output) {
+        if let Some(cap) = Regex::new(r"Latest handshake:\s*([^\n]+)").unwrap().captures(output) {
             status.latest_handshake = cap[1].trim().to_string();
         }
 
-        if let Some(cap) = re_transfer.captures(output) {
-            let transfer_str = cap[1].trim();
-            if let Some((received, sent)) = transfer_str.split_once(',') {
+        if let Some(cap) = Regex::new(r"transfer:\s*([^\n]+)").unwrap().captures(output) {
+            if let Some((received, sent)) = cap[1].trim().split_once(',') {
                 status.transfer_received = received.trim().to_string();
                 status.transfer_sent = sent.trim().to_string();
             }

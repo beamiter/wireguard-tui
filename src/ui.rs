@@ -13,7 +13,6 @@ pub fn draw(f: &mut Frame, app: &App) {
         Screen::Download => draw_download(f, app),
         Screen::Import => draw_import(f, app),
         Screen::Status => draw_status(f, app),
-        Screen::Settings => draw_settings(f, app),
     }
 }
 
@@ -301,101 +300,6 @@ fn draw_status(f: &mut Frame, app: &App) {
 
     let paragraph = Paragraph::new(status_lines)
         .block(Block::default().title("Connection Details").borders(Borders::ALL));
-
-    f.render_widget(paragraph, chunks[1]);
-}
-
-fn draw_settings(f: &mut Frame, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(2)
-        .constraints(
-            [
-                Constraint::Length(3),
-                Constraint::Min(10),
-            ]
-            .as_ref(),
-        )
-        .split(f.area());
-
-    let title = Paragraph::new("Settings")
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
-
-    f.render_widget(title, chunks[0]);
-
-    let config_path = app.config_manager.get_config_path_str();
-    let credentials_configured = !app.username.is_empty()
-        && app.username != "a314393"
-        && !app.password.is_empty()
-        && app.password != "L7W8cXG3MH";
-
-    let settings_text = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Configuration Status", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(Color::Yellow)),
-            Span::styled(
-                if credentials_configured { "✓ Configured" } else { "⚠ Not Configured" },
-                Style::default().fg(if credentials_configured { Color::Green } else { Color::Red }),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Username: ", Style::default().fg(Color::Yellow)),
-            Span::raw(if app.username.is_empty() {
-                "(not configured)".to_string()
-            } else if app.username == "a314393" {
-                "⚠ Using template value - please update!".to_string()
-            } else {
-                format!("{} ✓", app.username)
-            }),
-        ]),
-        Line::from(vec![
-            Span::styled("Password: ", Style::default().fg(Color::Yellow)),
-            Span::raw(if app.password.is_empty() {
-                "(not configured)".to_string()
-            } else if app.password == "L7W8cXG3MH" {
-                "⚠ Using template value - please update!".to_string()
-            } else {
-                "***configured*** ✓".to_string()
-            }),
-        ]),
-        Line::from(""),
-        Line::from("─".repeat(60)),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Configuration File Location:", Style::default().fg(Color::Cyan)),
-        ]),
-        Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(&config_path, Style::default().fg(Color::Green)),
-        ]),
-        Line::from(""),
-        Line::from("How to configure:"),
-        Line::from(vec![
-            Span::raw("  1. Edit the file: "),
-            Span::styled(format!("nano {}", config_path), Style::default().fg(Color::Yellow)),
-        ]),
-        Line::from("  2. Update the username and password with your StrongVPN credentials"),
-        Line::from("  3. Save and restart the application"),
-        Line::from(""),
-        Line::from("Get your credentials from:"),
-        Line::from("  • Login to https://strongtech.org/account/"),
-        Line::from("  • Click 'Account Setup Instructions'"),
-        Line::from("  • Look for 'VPN Account Information'"),
-        Line::from("  • Username starts with 'a'"),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Note: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::raw("Use VPN credentials (AIO Username/Password), NOT website login!"),
-        ]),
-    ];
-
-    let paragraph = Paragraph::new(settings_text)
-        .block(Block::default().title("Configuration").borders(Borders::ALL));
 
     f.render_widget(paragraph, chunks[1]);
 }
