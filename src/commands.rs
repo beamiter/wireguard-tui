@@ -111,26 +111,36 @@ impl CommandExecutor {
     }
 
     pub fn get_active_vpn() -> Result<Option<String>> {
-        let Some(output) = Command::new("ip")
-            .arg("link")
+        // 首先通过 wg show interfaces 获取所有活动的 WireGuard 接口
+        let output = Command::new("sudo")
+            .arg("wg")
             .arg("show")
+            .arg("interfaces")
             .output()
             .ok()
-            .filter(|o| o.status.success()) else {
-            return Ok(None);
-        };
+            .filter(|o| o.status.success());
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if line.contains("wireguard") {
-                if let Some(name) = line.split(':').nth(1) {
-                    let name = name.trim().trim_start_matches(|c: char| c.is_numeric());
-                    return Ok(Some(name.to_string()));
-                }
+        if let Some(output) = output {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let interfaces: Vec<&str> = stdout.split_whitespace().collect();
+
+            // 返回第一个接口（如果有多个，通常只会有一个活动）
+            if !interfaces.is_empty() {
+                return Ok(Some(interfaces[0].to_string()));
             }
         }
 
         Ok(None)
+    }
+
+    pub fn check_interface_exists(config_name: &str) -> Result<bool> {
+        let output = Command::new("sudo")
+            .arg("wg")
+            .arg("show")
+            .arg(config_name)
+            .output()?;
+
+        Ok(output.status.success())
     }
 
     fn detect_distro() -> Result<String> {
@@ -149,6 +159,10 @@ impl CommandExecutor {
     pub fn get_current_ip() -> Result<String> {
         let output = Command::new("curl")
             .arg("-s")
+            .arg("--connect-timeout")
+            .arg("3")  // 连接超时 3 秒
+            .arg("--max-time")
+            .arg("5")  // 总超时 5 秒
             .arg("https://api.ipify.org")
             .output()?;
 
@@ -156,6 +170,11 @@ impl CommandExecutor {
             return Err(anyhow!("Failed to get IP"));
         }
 
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if ip.is_empty() {
+            return Err(anyhow!("Empty IP response"));
+        }
+
+        Ok(ip)
     }
 }

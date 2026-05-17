@@ -49,33 +49,53 @@ impl VpnManager {
     }
 
     pub async fn connect(config_name: &str) -> Result<String> {
-        CommandExecutor::connect_vpn(config_name)
+        let config_name = config_name.to_string();
+        tokio::task::spawn_blocking(move || {
+            // 检查接口是否已经存在
+            if CommandExecutor::check_interface_exists(&config_name)? {
+                // 接口已存在，先断开再连接
+                let _ = CommandExecutor::disconnect_vpn(&config_name);
+            }
+
+            CommandExecutor::connect_vpn(&config_name)
+        }).await?
     }
 
     pub async fn disconnect(config_name: &str) -> Result<String> {
-        CommandExecutor::disconnect_vpn(config_name)
+        let config_name = config_name.to_string();
+        tokio::task::spawn_blocking(move || {
+            CommandExecutor::disconnect_vpn(&config_name)
+        }).await?
     }
 
     pub async fn get_status(config_name: &str) -> Result<VpnStatus> {
-        match CommandExecutor::get_vpn_status(config_name) {
-            Ok(output) => {
-                let status = Self::parse_status(&output, config_name);
-                Ok(status)
+        let config_name = config_name.to_string();
+        tokio::task::spawn_blocking(move || {
+            match CommandExecutor::get_vpn_status(&config_name) {
+                Ok(output) => {
+                    let status = Self::parse_status(&output, &config_name);
+                    Ok(status)
+                }
+                Err(_) => Ok(VpnStatus {
+                    interface: config_name.to_string(),
+                    is_connected: false,
+                    ..Default::default()
+                }),
             }
-            Err(_) => Ok(VpnStatus {
-                interface: config_name.to_string(),
-                is_connected: false,
-                ..Default::default()
-            }),
-        }
+        }).await?
     }
 
     pub async fn get_active_connection() -> Result<Option<String>> {
-        CommandExecutor::get_active_vpn()
+        tokio::task::spawn_blocking(|| {
+            CommandExecutor::get_active_vpn()
+        }).await?
     }
 
     pub async fn get_current_ip() -> Result<String> {
-        CommandExecutor::get_current_ip()
+        // 使用 spawn_blocking 避免阻塞异步运行时
+        tokio::task::spawn_blocking(|| {
+            CommandExecutor::get_current_ip()
+        }).await?
     }
 
     fn parse_status(output: &str, interface: &str) -> VpnStatus {
