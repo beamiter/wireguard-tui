@@ -1,4 +1,4 @@
-use crate::app::{App, Screen, Message};
+use crate::app::{App, Message, Screen};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -44,20 +44,21 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let lines = vec![
-        Line::from(vec![
-            Span::styled(title, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            title,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                status,
-                Style::default().fg(if app.active_server.is_some() {
-                    Color::Green
-                } else {
-                    Color::Red
-                }),
-            ),
-        ]),
+        Line::from(vec![Span::styled(
+            status,
+            Style::default().fg(if app.active_server.is_some() {
+                Color::Green
+            } else {
+                Color::Red
+            }),
+        )]),
     ];
 
     let paragraph = Paragraph::new(lines).block(Block::default().borders(Borders::BOTTOM));
@@ -65,6 +66,29 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_server_list(f: &mut Frame, area: Rect, app: &App) {
+    if app.servers.is_empty() {
+        let empty = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "No WireGuard configs found",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::from(""),
+            Line::from("Press o for download info, then i to import downloaded .conf files."),
+        ])
+        .block(
+            Block::default()
+                .title("Available Servers")
+                .borders(Borders::ALL),
+        )
+        .alignment(Alignment::Center);
+
+        f.render_widget(empty, area);
+        return;
+    }
+
     let items: Vec<ListItem> = app
         .servers
         .iter()
@@ -81,25 +105,133 @@ fn draw_server_list(f: &mut Frame, area: Rect, app: &App) {
             }
             content.push_str(server);
 
+            let mut lines = vec![Line::from(content)];
+
+            if is_selected {
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![Span::styled(
+                    "  Connection Details",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+
+                if let Some(details) = &app.selected_details {
+                    push_detail_line(&mut lines, "Address", details.interface_address.as_deref());
+                    push_detail_line(&mut lines, "DNS", details.dns.as_deref());
+                    push_detail_line(&mut lines, "Endpoint", details.endpoint.as_deref());
+                    push_detail_line(&mut lines, "Allowed IPs", details.allowed_ips.as_deref());
+                    push_detail_line(
+                        &mut lines,
+                        "Public Key",
+                        details
+                            .peer_public_key
+                            .as_deref()
+                            .map(shorten_key)
+                            .as_deref(),
+                    );
+                    push_detail_line(
+                        &mut lines,
+                        "Private Key",
+                        Some(if details.private_key_configured {
+                            "Configured"
+                        } else {
+                            "Missing"
+                        }),
+                    );
+                    push_detail_line(
+                        &mut lines,
+                        "Keepalive",
+                        details.persistent_keepalive.as_deref(),
+                    );
+                } else if let Some(error) = &app.selected_details_error {
+                    lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled("Config: ", Style::default().fg(Color::Yellow)),
+                        Span::styled(error, Style::default().fg(Color::Red)),
+                    ]));
+                } else {
+                    lines.push(Line::from("    No config details available"));
+                }
+
+                if is_active {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![Span::styled(
+                        "  Live Status",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    )]));
+                    push_detail_line(
+                        &mut lines,
+                        "Handshake",
+                        non_empty(&app.status.latest_handshake),
+                    );
+                    push_detail_line(
+                        &mut lines,
+                        "Received",
+                        non_empty(&app.status.transfer_received),
+                    );
+                    push_detail_line(&mut lines, "Sent", non_empty(&app.status.transfer_sent));
+                }
+            }
+
             let style = if is_selected {
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .fg(if is_active { Color::Green } else { Color::White })
+                Style::default().bg(Color::DarkGray).fg(if is_active {
+                    Color::Green
+                } else {
+                    Color::White
+                })
             } else {
-                Style::default().fg(if is_active { Color::Green } else { Color::White })
+                Style::default().fg(if is_active {
+                    Color::Green
+                } else {
+                    Color::White
+                })
             };
 
-            ListItem::new(content).style(style)
+            ListItem::new(lines).style(style)
         })
         .collect();
 
     let list = List::new(items)
-        .block(Block::default()
-            .title("Available Servers")
-            .borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title("Available Servers")
+                .borders(Borders::ALL),
+        )
         .style(Style::default().fg(Color::White));
 
     f.render_widget(list, area);
+}
+
+fn push_detail_line(lines: &mut Vec<Line>, label: &str, value: Option<&str>) {
+    let value = value
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("-");
+    lines.push(Line::from(vec![
+        Span::raw("    "),
+        Span::styled(format!("{}: ", label), Style::default().fg(Color::Yellow)),
+        Span::styled(value.to_string(), Style::default().fg(Color::White)),
+    ]));
+}
+
+fn non_empty(value: &str) -> Option<&str> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn shorten_key(key: &str) -> String {
+    const VISIBLE_PREFIX: usize = 20;
+
+    if key.len() > VISIBLE_PREFIX {
+        format!("{}...", &key[..VISIBLE_PREFIX])
+    } else {
+        key.to_string()
+    }
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
@@ -131,7 +263,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let help_text = if app.loading {
         "Loading...".to_string()
     } else {
-        "↑↓: Navigate | Enter: Connect/Disconnect | o: Open Browser | i: Import | d: Delete | s: Status | q: Quit".to_string()
+        "↑↓: Navigate | Enter: Connect/Disconnect | o: Download Info | i: Import | d: Delete | s: Status | q: Quit".to_string()
     };
 
     let help = Paragraph::new(help_text)
@@ -156,7 +288,11 @@ fn draw_download(f: &mut Frame, app: &App) {
         .split(f.area());
 
     let title = Paragraph::new("Download WireGuard Configurations")
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .alignment(Alignment::Center);
 
     f.render_widget(title, chunks[0]);
@@ -167,35 +303,65 @@ fn draw_download(f: &mut Frame, app: &App) {
     let info_lines = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("Step 1: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Step 1: ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Open this URL in your browser:"),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled(download_url, Style::default().fg(Color::Green).add_modifier(Modifier::UNDERLINED)),
+            Span::styled(
+                download_url,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
         ]),
         Line::from(""),
         Line::from("─".repeat(70)),
         Line::from(""),
         Line::from(vec![
-            Span::styled("Step 2: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Step 2: ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Login with your credentials:"),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("  Username: ", Style::default().fg(Color::Cyan)),
-            Span::styled(&app.username, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                &app.username,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  Password: ", Style::default().fg(Color::Cyan)),
-            Span::styled(&app.password, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                &app.password,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(""),
         Line::from("─".repeat(70)),
         Line::from(""),
         Line::from(vec![
-            Span::styled("Step 3: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Step 3: ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Download server configs (*.conf files)"),
         ]),
         Line::from(""),
@@ -206,14 +372,26 @@ fn draw_download(f: &mut Frame, app: &App) {
         Line::from("─".repeat(70)),
         Line::from(""),
         Line::from(vec![
-            Span::styled("Step 4: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::styled("Return to this TUI and press 'i' to import", Style::default().fg(Color::Green)),
+            Span::styled(
+                "Step 4: ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Return to this TUI and press 'i' to import",
+                Style::default().fg(Color::Green),
+            ),
         ]),
         Line::from(""),
     ];
 
     let paragraph = Paragraph::new(info_lines)
-        .block(Block::default().title("Download Instructions").borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title("Download Instructions")
+                .borders(Borders::ALL),
+        )
         .alignment(Alignment::Left);
 
     f.render_widget(paragraph, chunks[1]);
@@ -229,17 +407,15 @@ fn draw_status(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
-        .constraints(
-            [
-                Constraint::Length(3),
-                Constraint::Min(15),
-            ]
-            .as_ref(),
-        )
+        .constraints([Constraint::Length(3), Constraint::Min(15)].as_ref())
         .split(f.area());
 
     let header = Paragraph::new("VPN Status")
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .block(Block::default().borders(Borders::BOTTOM));
 
     f.render_widget(header, chunks[0]);
@@ -252,7 +428,11 @@ fn draw_status(f: &mut Frame, app: &App) {
         Line::from(vec![
             Span::styled("Status: ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                if app.status.is_connected { "Connected ✓" } else { "Disconnected ✗" },
+                if app.status.is_connected {
+                    "Connected ✓"
+                } else {
+                    "Disconnected ✗"
+                },
                 Style::default().fg(if app.status.is_connected {
                     Color::Green
                 } else {
@@ -298,8 +478,11 @@ fn draw_status(f: &mut Frame, app: &App) {
         ]),
     ];
 
-    let paragraph = Paragraph::new(status_lines)
-        .block(Block::default().title("Connection Details").borders(Borders::ALL));
+    let paragraph = Paragraph::new(status_lines).block(
+        Block::default()
+            .title("Connection Details")
+            .borders(Borders::ALL),
+    );
 
     f.render_widget(paragraph, chunks[1]);
 }
@@ -319,7 +502,11 @@ fn draw_import(f: &mut Frame, app: &App) {
         .split(f.area());
 
     let header = Paragraph::new("Import WireGuard Configurations")
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .block(Block::default().borders(Borders::BOTTOM));
 
     f.render_widget(header, chunks[0]);
@@ -337,9 +524,10 @@ fn draw_import(f: &mut Frame, app: &App) {
 
         let empty = vec![
             Line::from(""),
-            Line::from(vec![
-                Span::styled("No .conf files found", Style::default().fg(Color::Yellow)),
-            ]),
+            Line::from(vec![Span::styled(
+                "No .conf files found",
+                Style::default().fg(Color::Yellow),
+            )]),
             Line::from(""),
             Line::from(vec![
                 Span::styled("Scanned path: ", Style::default().fg(Color::Cyan)),
@@ -353,13 +541,22 @@ fn draw_import(f: &mut Frame, app: &App) {
             Line::from("  4. Press 'i' again to import them"),
             Line::from(""),
             Line::from(vec![
-                Span::styled("Tip: ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Tip: ",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("Any .conf files in Downloads will be detected"),
             ]),
         ];
 
         let paragraph = Paragraph::new(empty)
-            .block(Block::default().title("No Configs Found").borders(Borders::ALL))
+            .block(
+                Block::default()
+                    .title("No Configs Found")
+                    .borders(Borders::ALL),
+            )
             .alignment(Alignment::Left);
 
         f.render_widget(paragraph, chunks[1]);
@@ -376,27 +573,25 @@ fn draw_import(f: &mut Frame, app: &App) {
                 let info = ConfigDownloader::format_config_info(path);
 
                 // 复选框符号
-                let checkbox = if is_checked {
-                    "[✓]"
-                } else {
-                    "[ ]"
-                };
+                let checkbox = if is_checked { "[✓]" } else { "[ ]" };
 
                 // 选择指示器
-                let indicator = if is_selected {
-                    "▶"
-                } else {
-                    " "
-                };
+                let indicator = if is_selected { "▶" } else { " " };
 
                 let content = format!("{} {} {}", indicator, checkbox, info);
 
                 let style = if is_selected {
-                    Style::default()
-                        .bg(Color::DarkGray)
-                        .fg(if is_checked { Color::Green } else { Color::White })
+                    Style::default().bg(Color::DarkGray).fg(if is_checked {
+                        Color::Green
+                    } else {
+                        Color::White
+                    })
                 } else {
-                    Style::default().fg(if is_checked { Color::Green } else { Color::White })
+                    Style::default().fg(if is_checked {
+                        Color::Green
+                    } else {
+                        Color::White
+                    })
                 };
 
                 ListItem::new(content).style(style)
@@ -411,9 +606,7 @@ fn draw_import(f: &mut Frame, app: &App) {
         );
 
         let list = List::new(items)
-            .block(Block::default()
-                .title(title)
-                .borders(Borders::ALL))
+            .block(Block::default().title(title).borders(Borders::ALL))
             .style(Style::default().fg(Color::White));
 
         f.render_widget(list, chunks[1]);

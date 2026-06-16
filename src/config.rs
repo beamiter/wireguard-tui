@@ -4,6 +4,48 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfigDetails {
+    pub interface_address: Option<String>,
+    pub dns: Option<String>,
+    pub peer_public_key: Option<String>,
+    pub endpoint: Option<String>,
+    pub allowed_ips: Option<String>,
+    pub persistent_keepalive: Option<String>,
+    pub private_key_configured: bool,
+}
+
+impl ConfigDetails {
+    pub fn from_wireguard_config(content: &str) -> Self {
+        let mut details = Self::default();
+
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+
+            let value = value.trim();
+            match key.trim().to_ascii_lowercase().as_str() {
+                "address" => details.interface_address = Some(value.to_string()),
+                "dns" => details.dns = Some(value.to_string()),
+                "privatekey" => details.private_key_configured = !value.is_empty(),
+                "publickey" => details.peer_public_key = Some(value.to_string()),
+                "endpoint" => details.endpoint = Some(value.to_string()),
+                "allowedips" => details.allowed_ips = Some(value.to_string()),
+                "persistentkeepalive" => details.persistent_keepalive = Some(value.to_string()),
+                _ => {}
+            }
+        }
+
+        details
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub username: String,
@@ -142,5 +184,41 @@ auto_download = true
 
     pub fn get_config_path(&self, name: &str) -> PathBuf {
         self.wg_config_dir.join(format!("{}.conf", name))
+    }
+
+    pub fn load_config_details(&self, name: &str) -> Result<ConfigDetails> {
+        let content = fs::read_to_string(self.get_config_path(name))?;
+        Ok(ConfigDetails::from_wireguard_config(&content))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConfigDetails;
+
+    #[test]
+    fn parses_wireguard_config_details() {
+        let content = r#"
+[Interface]
+PrivateKey = secret
+Address = 10.0.0.2/24
+DNS = 8.8.8.8
+
+[Peer]
+PublicKey = server-key
+Endpoint = 108.171.121.213:58493
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+"#;
+
+        let details = ConfigDetails::from_wireguard_config(content);
+
+        assert_eq!(details.interface_address.as_deref(), Some("10.0.0.2/24"));
+        assert_eq!(details.dns.as_deref(), Some("8.8.8.8"));
+        assert!(details.private_key_configured);
+        assert_eq!(details.peer_public_key.as_deref(), Some("server-key"));
+        assert_eq!(details.endpoint.as_deref(), Some("108.171.121.213:58493"));
+        assert_eq!(details.allowed_ips.as_deref(), Some("0.0.0.0/0"));
+        assert_eq!(details.persistent_keepalive.as_deref(), Some("25"));
     }
 }

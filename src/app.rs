@@ -1,4 +1,4 @@
-use crate::config::ConfigManager;
+use crate::config::{ConfigDetails, ConfigManager};
 use crate::download::ConfigDownloader;
 use crate::vpn::{VpnManager, VpnStatus};
 use anyhow::Result;
@@ -37,6 +37,8 @@ pub struct App {
     pub import_configs: Vec<std::path::PathBuf>,
     pub import_selected: usize,
     pub import_checked: Vec<bool>,
+    pub selected_details: Option<ConfigDetails>,
+    pub selected_details_error: Option<String>,
 }
 
 impl App {
@@ -48,10 +50,7 @@ impl App {
         servers.sort();
 
         // 尝试获取活动连接，失败也没关系
-        let active_server = VpnManager::get_active_connection()
-            .await
-            .ok()
-            .flatten();
+        let active_server = VpnManager::get_active_connection().await.ok().flatten();
 
         // 如果检测到活动连接，获取其状态
         let status = if let Some(ref server) = active_server {
@@ -61,12 +60,14 @@ impl App {
         };
 
         // Check if credentials are configured
-        let credentials_configured = !config.username.is_empty()
-            && !config.password.is_empty();
+        let credentials_configured = !config.username.is_empty() && !config.password.is_empty();
 
         let initial_message = if !credentials_configured {
             let config_path = config_manager.get_config_path_str();
-            Message::Info(format!("⚠️  Please configure credentials in: {}", config_path))
+            Message::Info(format!(
+                "⚠️  Please configure credentials in: {}",
+                config_path
+            ))
         } else if active_server.is_some() {
             // 如果检测到活动连接，显示欢迎消息
             Message::Success(format!("Connected to {}", active_server.as_ref().unwrap()))
@@ -74,7 +75,7 @@ impl App {
             Message::None
         };
 
-        let app = Self {
+        let mut app = Self {
             current_screen: Screen::Main,
             selected_index: 0,
             servers,
@@ -91,7 +92,11 @@ impl App {
             import_configs: Vec::new(),
             import_selected: 0,
             import_checked: Vec::new(),
+            selected_details: None,
+            selected_details_error: None,
         };
+
+        app.refresh_selected_details();
 
         VpnManager::install_if_needed().await.ok();
 
@@ -101,12 +106,14 @@ impl App {
     pub fn handle_up(&mut self) {
         if self.selected_index > 0 {
             self.selected_index -= 1;
+            self.refresh_selected_details();
         }
     }
 
     pub fn handle_down(&mut self) {
         if self.selected_index < self.servers.len().saturating_sub(1) {
             self.selected_index += 1;
+            self.refresh_selected_details();
         }
     }
 
@@ -146,7 +153,10 @@ impl App {
         match self.downloader.scan_downloads() {
             Ok(configs) => {
                 if configs.is_empty() {
-                    self.set_error(format!("No .conf files found in {}. Download them first by pressing 'o'.", downloads_path));
+                    self.set_error(format!(
+                        "No .conf files found in {}. Download them first by pressing 'o'.",
+                        downloads_path
+                    ));
                     self.loading = false;
                     self.current_screen = Screen::Main;
                 } else {
@@ -156,7 +166,10 @@ impl App {
                     // 初始化选中状态，默认全部选中
                     self.import_checked = vec![true; count];
                     self.loading = false;
-                    self.set_info(format!("Found {} config(s). Use Space to check/uncheck, Enter to import selected.", count));
+                    self.set_info(format!(
+                        "Found {} config(s). Use Space to check/uncheck, Enter to import selected.",
+                        count
+                    ));
                 }
             }
             Err(e) => {
@@ -185,7 +198,8 @@ impl App {
         self.loading = true;
 
         // 收集所有选中的文件
-        let selected_paths: Vec<_> = self.import_configs
+        let selected_paths: Vec<_> = self
+            .import_configs
             .iter()
             .enumerate()
             .filter(|(idx, _)| self.import_checked.get(*idx).copied().unwrap_or(false))
@@ -198,10 +212,17 @@ impl App {
             return Ok(());
         }
 
-        match self.downloader.import_configs(&selected_paths, self.config_manager.get_wg_config_dir()) {
+        match self
+            .downloader
+            .import_configs(&selected_paths, self.config_manager.get_wg_config_dir())
+        {
             Ok(imported) => {
                 self.servers = self.config_manager.list_configs()?;
                 self.servers.sort();
+                self.selected_index = self
+                    .selected_index
+                    .min(self.servers.len().saturating_sub(1));
+                self.refresh_selected_details();
                 self.set_success(format!("Imported {} config(s)", imported.len()));
                 self.current_screen = Screen::Main;
             }
@@ -232,6 +253,8 @@ impl App {
         if self.selected_index >= self.servers.len() && self.selected_index > 0 {
             self.selected_index -= 1;
         }
+
+        self.refresh_selected_details();
 
         self.set_success(format!("Deleted {}", server));
         Ok(())
@@ -342,5 +365,24 @@ impl App {
     fn set_info(&mut self, msg: impl Into<String>) {
         self.message = Message::Info(msg.into());
         self.message_time = Some(Instant::now());
+    }
+
+    fn refresh_selected_details(&mut self) {
+        let Some(server) = self.servers.get(self.selected_index) else {
+            self.selected_details = None;
+            self.selected_details_error = None;
+            return;
+        };
+
+        match self.config_manager.load_config_details(server) {
+            Ok(details) => {
+                self.selected_details = Some(details);
+                self.selected_details_error = None;
+            }
+            Err(e) => {
+                self.selected_details = None;
+                self.selected_details_error = Some(e.to_string());
+            }
+        }
     }
 }
