@@ -1,5 +1,8 @@
 # 浏览器集成 + 导入功能
 
+> [!WARNING]
+> 这是已归档的 v0.3 设计记录，不适用于 v0.4。不要按本文保存账号密码、手工 `sudo cp` 或绕过导入校验；请只使用当前 [README.md](README.md)。
+
 ## 概述
 
 WireGuard TUI 现在支持**浏览器集成**和**配置文件导入**！不再需要自动下载，而是：
@@ -33,8 +36,8 @@ WireGuard TUI 现在支持**浏览器集成**和**配置文件导入**！不再�
 │                                                │
 │ Step 2: Login with your credentials:          │
 │                                                │
-│   Username: a314393                            │
-│   Password: L7W8cXG3MH                         │
+│   Username: your-vpn-username                            │
+│   Password: your-vpn-password                         │
 │                                                │
 │ ──────────────────────────────────────────────│
 │                                                │
@@ -60,8 +63,8 @@ WireGuard TUI 现在支持**浏览器集成**和**配置文件导入**！不再�
 **在浏览器中：**
 
 1. 输入凭证登录
-   - Username: `a314393`（你的实际用户名）
-   - Password: `L7W8cXG3MH`（你的实际密码）
+   - Username: `your-vpn-username`（你的实际用户名）
+   - Password: `your-vpn-password`（你的实际密码）
 
 2. 选择服务器
    - 浏览可用的服务器列表
@@ -274,8 +277,8 @@ cp ~/Downloads/str-*.conf ~/wireguard-backup/
 # 浏览器自动打开下载页面
 
 # 3. 在浏览器登录
-# Username: a314393
-# Password: L7W8cXG3MH
+# Username: your-vpn-username
+# Password: your-vpn-password
 
 # 4. 下载几个服务器配置
 # str-us-001.conf

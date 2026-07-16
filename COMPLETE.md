@@ -1,5 +1,8 @@
 # ✅ WireGuard TUI - 完整功能实现
 
+> [!WARNING]
+> 这是已归档的 v0.3 快照，不适用于 v0.4。不要按本文保存凭据或执行旧命令；请以当前 [README.md](README.md) 为准。
+
 ## 🎉 最终版本：v0.3.0
 
 所有功能已按你的要求完整实现！
@@ -44,8 +47,8 @@
    │ https://tools.strongvpn.asia/... │
    │                                  │
    │ Step 2: 用户名和密码             │
-   │ Username: a314393                │
-   │ Password: L7W8cXG3MH             │
+   │ Username: your-vpn-username                │
+   │ Password: your-vpn-password             │
    │                                  │
    │ Step 3: 下载配置文件             │
    └──────────────────────────────────┘
@@ -139,8 +142,8 @@ Esc      返回主界面
 │   https://tools.strongvpn.asia/...     │
 │                                         │
 │ Step 2: 登录凭证                        │
-│   Username: a314393                     │
-│   Password: L7W8cXG3MH                  │
+│   Username: your-vpn-username                     │
+│   Password: your-vpn-password                  │
 │                                         │
 │ Step 3: 下载配置文件到 ~/Downloads/     │
 │ Step 4: 按 'i' 导入                     │

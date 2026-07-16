@@ -1,4 +1,7 @@
 #!/bin/bash
+echo "Archived sudo-era helper: v0.4 must run as a normal user; see README.md." >&2
+exit 2
+
 # 验证 sudo 环境变量修复
 
 echo "=== Verifying sudo HOME fix ==="
@@ -59,11 +62,12 @@ fi
 echo ""
 echo "=== Summary ==="
 echo ""
-echo "The fix should work! When running with sudo:"
-echo "  1. App detects SUDO_USER=$USER"
-echo "  2. Uses /home/$USER instead of /root"
-echo "  3. Finds Downloads at /home/$USER/Downloads"
-echo "  4. Scans for .conf files successfully"
+echo "The fix should work when the TUI runs as the normal user:"
+echo "  1. Run sudo -v only to refresh the credential cache"
+echo "  2. Start the TUI without sudo so HOME remains /home/$USER"
+echo "  3. The app finds Downloads at /home/$USER/Downloads"
+echo "  4. It scans for .conf files successfully"
 echo ""
-echo "✓ Ready to test with: sudo ./target/debug/wireguard-tui"
+echo "✓ Ready to test with: sudo -v"
+echo "                      ./target/debug/wireguard-tui"
 echo ""

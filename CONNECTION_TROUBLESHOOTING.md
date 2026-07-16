@@ -1,5 +1,7 @@
 # 连接故障排除
 
+> 历史兼容说明：v0.4 不允许以 root 身份运行整个 TUI。需要排障时先执行 `sudo -v`，然后以当前普通用户启动应用；下文仅在单独的系统诊断命令确实需要时使用 sudo。
+
 ## 问题：Connection failed
 
 你看到的错误：
@@ -39,7 +41,7 @@ sudo apt install wireguard-dkms  # Ubuntu/Debian
 
 **检查配置：**
 ```bash
-sudo cat /etc/wireguard/str-dub303.conf
+sudo sed -E 's/^([[:space:]]*(PrivateKey|PresharedKey)[[:space:]]*=[[:space:]]*).*/\1<HIDDEN>/I' -- /etc/wireguard/str-dub303.conf
 ```
 
 **正确的格式应该是：**
@@ -72,9 +74,10 @@ sudo ip link delete str-dub303
 
 ### 4. 权限问题
 
-**确保用 sudo 运行：**
+**刷新 sudo 凭据后，以普通用户运行 TUI：**
 ```bash
-sudo ./target/release/wireguard-tui
+sudo -v
+./target/release/wireguard-tui
 ```
 
 ## 🧪 诊断步骤
@@ -115,11 +118,9 @@ echo $?  # 检查退出码
 ### 步骤 3：检查详细错误
 
 ```bash
-# 启用 WireGuard 详细输出
-sudo wg-quick up str-dub303 2>&1 | tee wg-debug.log
-
-# 查看日志
-cat wg-debug.log
+# 在本机终端观察错误；不要把原始输出写入日志或直接分享，
+# 无效密钥的底层诊断可能包含原始密钥值。
+sudo wg-quick up str-dub303
 ```
 
 ### 步骤 4：检查系统日志
@@ -199,7 +200,7 @@ lsmod | grep wireguard
 sudo modprobe wireguard
 
 # 3. 检查配置文件
-sudo cat /etc/wireguard/str-dub303.conf
+sudo sed -E 's/^([[:space:]]*(PrivateKey|PresharedKey)[[:space:]]*=[[:space:]]*).*/\1<HIDDEN>/I' -- /etc/wireguard/str-dub303.conf
 
 # 4. 手动测试连接
 sudo wg-quick up str-dub303
@@ -217,10 +218,9 @@ sudo wg-quick down str-dub303
 
 ```bash
 # 查看配置
-sudo cat /etc/wireguard/str-dub303.conf
+sudo sed -E 's/^([[:space:]]*(PrivateKey|PresharedKey)[[:space:]]*=[[:space:]]*).*/\1<HIDDEN>/I' -- /etc/wireguard/str-dub303.conf
 
-# 检查语法
-sudo wg-quick strip str-dub303
+# 使用 v0.4 TUI 的导入/连接前校验；wg-quick strip 会输出私钥，不要用它制作日志。
 ```
 
 **检查要点：**
@@ -260,11 +260,10 @@ cat /etc/os-release | grep PRETTY_NAME
 wg-quick --version
 lsmod | grep wireguard
 
-# 配置文件（隐藏私钥）
-sudo cat /etc/wireguard/str-dub303.conf | sed 's/PrivateKey = .*/PrivateKey = <HIDDEN>/'
+# 配置文件（同时隐藏 PrivateKey 与 PresharedKey）
+sudo sed -E 's/^([[:space:]]*(PrivateKey|PresharedKey)[[:space:]]*=[[:space:]]*).*/\1<HIDDEN>/I' -- /etc/wireguard/str-dub303.conf
 
-# 手动连接的完整输出
-sudo wg-quick up str-dub303 2>&1
+# 只描述错误类型和退出码，不要粘贴未经审查的完整 wg-quick 输出。
 ```
 
 ## 📝 常见错误及解决
@@ -272,7 +271,7 @@ sudo wg-quick up str-dub303 2>&1
 | 错误信息 | 原因 | 解决方案 |
 |----------|------|----------|
 | `module not found` | 内核不支持 WireGuard | 安装 wireguard-dkms |
-| `Permission denied` | 权限不足 | 使用 sudo |
+| `Permission denied` | 权限不足或 sudo 缓存失效 | 退出 TUI，运行 `sudo -v`，再以普通用户启动 |
 | `Cannot allocate memory` | 资源不足 | 重启系统 |
 | `Invalid argument` | 配置格式错误 | 重新下载配置 |
 | `Address already in use` | 接口已存在 | 先 down 再 up |

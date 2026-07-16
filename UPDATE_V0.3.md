@@ -1,5 +1,8 @@
 # 🎉 v0.3.0 重大更新：浏览器集成 + 导入功能
 
+> [!WARNING]
+> 这是已归档的 v0.3 发布记录，不是 v0.4 操作指南。不要保存本文示例凭据、手工 `sudo cp` 或绕过当前导入校验；请以 [README.md](README.md) 为准。
+
 ## ✨ 更新概述
 
 完全重新设计了配置文件获取方式！从**自动下载**改为**浏览器集成 + 手动导入**。
@@ -42,8 +45,8 @@
 │   https://tools.strongvpn.asia/share/...      │
 │                                                │
 │ Step 2: Login with your credentials:          │
-│   Username: a314393                            │
-│   Password: L7W8cXG3MH                         │
+│   Username: your-vpn-username                            │
+│   Password: your-vpn-password                         │
 │                                                │
 │ Step 3: Download server configs                │
 │ Step 4: Press 'i' to import                    │
@@ -54,8 +57,8 @@
 
 #### 步骤 2：在浏览器下载
 
-- 输入账号：`a314393`
-- 输入密码：`L7W8cXG3MH`
+- 输入账号：`your-vpn-username`
+- 输入密码：`your-vpn-password`
 - 选择服务器（如 `str-zrh302`）
 - 下载 `.conf` 文件到 Downloads
 
@@ -327,7 +330,7 @@ cargo build --release
 # 2. 按 'o' - 浏览器打开
 
 # 3. 在浏览器：
-#    - 登录 (a314393 / L7W8cXG3MH)
+#    - 登录 (your-vpn-username / your-vpn-password)
 #    - 下载配置到 ~/Downloads/
 
 # 4. 回到 TUI，按 'i' - 导入

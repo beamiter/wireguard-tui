@@ -1,4 +1,7 @@
 #!/bin/bash
+echo "Archived v0.3 helper: use README.md for the v0.4 build and startup flow." >&2
+exit 2
+
 set -e
 
 echo "🔒 WireGuard TUI Manager - Setup Script"

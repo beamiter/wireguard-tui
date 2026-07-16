@@ -1,4 +1,7 @@
 #!/bin/bash
+echo "Archived test: v0.4 intentionally does not store provider credentials." >&2
+exit 2
+
 # Test script for auto-config generation
 
 set -e
@@ -75,8 +78,8 @@ echo "🔍 Test 4: Template values present"
 echo "-----------------------------------"
 
 # Check if template values are present
-if grep -q 'username = "a314393"' "$CONFIG_FILE" && \
-   grep -q 'password = "L7W8cXG3MH"' "$CONFIG_FILE"; then
+if grep -q 'username = "your-vpn-username"' "$CONFIG_FILE" && \
+   grep -q 'password = "your-vpn-password"' "$CONFIG_FILE"; then
     echo "✅ Test 4 PASSED: Template values present"
 else
     echo "❌ Test 4 FAILED: Template values missing"

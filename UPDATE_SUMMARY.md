@@ -1,5 +1,8 @@
 # 🎉 更新完成：自动配置生成功能
 
+> [!WARNING]
+> 这是已归档的早期设计记录。v0.4 不保存服务商账号密码；不要执行本文步骤，请以当前 [README.md](README.md) 为准。
+
 ## ✨ 新功能总结
 
 已成功为 WireGuard TUI 添加**配置文件自动生成**功能！
@@ -183,8 +186,8 @@ fn create_config_template(&self) -> Result<()> {
     let template = r#"
 # WireGuard TUI Configuration File
 # (包含完整注释和说明)
-username = "a314393"
-password = "L7W8cXG3MH"
+username = "your-vpn-username"
+password = "your-vpn-password"
 auto_download = true
 "#;
     fs::write(&self.config_path, template)?;
@@ -197,9 +200,9 @@ auto_download = true
 **app.rs 检测逻辑：**
 ```rust
 let credentials_configured = !config.username.is_empty()
-    && config.username != "a314393"
+    && config.username != "your-vpn-username"
     && !config.password.is_empty()
-    && config.password != "L7W8cXG3MH";
+    && config.password != "your-vpn-password";
 ```
 
 ### 3. 改进的 UI 反馈

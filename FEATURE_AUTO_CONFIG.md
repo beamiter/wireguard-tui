@@ -1,5 +1,8 @@
 # ✨ 新功能：自动配置生成
 
+> [!WARNING]
+> 这是已归档的 v0.2/v0.3 设计记录。v0.4 不保存服务商账号密码；不要执行本文步骤，请以当前 [README.md](README.md) 为准。
+
 ## 概述
 
 WireGuard TUI 现在支持**配置文件自动生成**！首次运行时，应用会自动创建配置模板，你只需要编辑凭证即可开始使用。
@@ -66,10 +69,10 @@ $ ./target/release/wireguard-tui
 # NOT your website login email/password!
 
 # Your StrongVPN username (starts with 'a')
-username = "a314393"
+username = "your-vpn-username"
 
 # Your StrongVPN password
-password = "L7W8cXG3MH"
+password = "your-vpn-password"
 
 # Automatically download configs on first run
 auto_download = true
@@ -160,9 +163,9 @@ Password: ⚠ Using template value - please update!
 ```rust
 // 未配置的条件（任一为真）：
 - username 为空
-- username == "a314393" (模板值)
+- username == "your-vpn-username" (模板值)
 - password 为空
-- password == "L7W8cXG3MH" (模板值)
+- password == "your-vpn-password" (模板值)
 ```
 
 ## 🛠️ 技术实现
@@ -197,9 +200,9 @@ pub async fn new() -> Result<Self> {
     
     // 检测凭证是否已配置
     let credentials_configured = !config.username.is_empty()
-        && config.username != "a314393"
+        && config.username != "your-vpn-username"
         && !config.password.is_empty()
-        && config.password != "L7W8cXG3MH";
+        && config.password != "your-vpn-password";
     
     // 如果未配置，显示提示
     let initial_message = if !credentials_configured {

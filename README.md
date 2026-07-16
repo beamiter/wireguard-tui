@@ -1,225 +1,162 @@
-# WireGuard TUI Manager
+# wireguard-tui
 
-一个用 Rust 编写的全功能 WireGuard VPN 管理器 TUI 应用程序。
+`wireguard-tui` 是一个面向 Linux 的 WireGuard 配置与连接管理终端界面。v0.4 提供可滚动的服务器列表、搜索、连接状态刷新、安全导入、删除确认，以及不会阻塞界面的后台操作。
 
-## 功能特性
+> 安全提示：请不要用 `sudo wireguard-tui` 启动整个应用。需要执行 WireGuard 操作时，先在普通 shell 中运行 `sudo -v`，再以当前用户启动 TUI。
 
-✨ **核心功能：**
-- 🔒 自动安装 WireGuard
-- 📥 从 StrongVPN 下载 WireGuard 配置文件
-- 🔌 一键连接/断开 VPN
-- 📊 实时连接状态监控
-- 📈 流量统计信息
-- 🗂️ 配置文件管理
-- 🖥️ 交互式 TUI 界面
+## 功能
 
-## 安装
+- 浏览、搜索并连接本机 `/etc/wireguard/*.conf`
+- 在后台执行连接、断开、状态刷新和导入，操作期间界面仍可响应
+- 显示握手时间、端点和收发流量，并标记刷新中或已过期的状态
+- 从用户的 `Downloads` 目录选择并校验配置后导入
+- 删除前显示确认对话框，活动配置会先安全断开
+- 按页面隔离快捷键，错误在当前页面可见
+- 退出或发生错误时恢复终端状态
 
-### 前置要求
-- Rust 1.70+ ([安装 Rust](https://rustup.rs/))
-- Linux (Ubuntu, Debian, Fedora, Arch, openSUSE 等)
-- sudo 权限（用于 WireGuard 操作）
+## 运行要求
 
-### 编译
+- Linux 与支持 UTF-8 的终端
+- 终端尺寸至少为 `80×24`；更小时应用只显示调整尺寸提示，并屏蔽变更操作
+- 已安装 `wg` 和 `wg-quick`
+- 配置使用 `DNS = ...` 时，系统需提供与 `wg-quick` 兼容的 DNS 辅助工具（常见为 `resolvconf`）
+- 当前用户拥有执行必要 WireGuard 命令的 sudo 权限
+- 从源码构建时需要 Rust 1.88 或更高版本
+
+v0.4 **不会自动安装 WireGuard、DNS 工具或其他系统软件**。请先使用发行版的软件包管理器完成安装。
+
+## 构建
 
 ```bash
+git clone https://github.com/beamiter/wireguard-tui.git
 cd wireguard-tui
-cargo build --release
+cargo build --release --locked
 ```
 
-编译后的可执行文件在 `target/release/wireguard-tui`
+可执行文件位于 `target/release/wireguard-tui`。
 
 ## 配置
 
-### ✨ 自动配置生成（新功能）
+首次运行会在以下位置创建应用配置：
 
-**首次运行时，配置文件会自动生成！**
+```text
+~/.config/wireguard-tui/config.toml
+```
+
+v0.4 不保存、读取或发送 VPN 服务商账号密码；请只在浏览器中的服务商页面登录。首次成功读取旧配置时，应用会把所有废弃字段清除并改写为空模板。应用还会自动把该目录和文件限制为当前用户可访问；也可手动核验：
 
 ```bash
+chmod 600 ~/.config/wireguard-tui/config.toml
+```
+
+不要把终端录屏、完整 WireGuard 配置或诊断日志提交到版本库。凭据处置建议见 [SECURITY.md](SECURITY.md)。
+
+## 启动
+
+先刷新 sudo 凭据缓存，再以普通用户运行：
+
+```bash
+sudo -v
 ./target/release/wireguard-tui
 ```
 
-应用会：
-1. ✅ **自动创建**配置模板 `~/.config/wireguard-tui/config.toml`
-2. ✅ 检查 WireGuard 是否安装
-3. ✅ 如果未安装，自动安装 WireGuard 工具
-4. ⚠️ 提示你编辑配置文件
+sudo 缓存过期后，后台操作会失败并在界面显示错误；退出应用、重新执行 `sudo -v` 后再启动即可。
 
-### 编辑配置
-
-```bash
-# 打开配置文件
-nano ~/.config/wireguard-tui/config.toml
-```
-
-**只需更新这两行：**
-
-```toml
-username = "your-actual-username"  # 改为你的 StrongVPN 用户名
-password = "your-actual-password"  # 改为你的 StrongVPN 密码
-```
-
-配置文件包含详细注释说明，位置：`~/.config/wireguard-tui/config.toml`
-
-💡 **提示：** 应用会自动检测凭证是否为模板默认值，并在界面提示你更新。
-
-📖 **详细说明：** 查看 [AUTO_CONFIG.md](AUTO_CONFIG.md) 了解自动配置功能的完整文档
-
-## 使用方法
-
-### 导航
-
-| 按键 | 功能 |
-|------|------|
-| `↑` `↓` | 上下移动选择 |
-| `Enter` | 连接/断开选中的服务器 |
-| `o` | ✨ 在浏览器中打开下载页面 |
-| `i` | ✨ 导入下载的配置文件 |
-| `d` | 删除选中的配置文件 |
-| `s` | 查看连接状态详情 |
-| `q` 或 `Ctrl+C` | 退出应用 |
-
-### 工作流程
-
-#### 1. 下载配置文件（浏览器 + 导入）
-
-**步骤 1：** 按 `o` 查看下载信息
-- 显示下载 URL、用户名、密码
-- 复制信息到浏览器手动操作
-
-**步骤 2：** 在浏览器中下载
-- 输入你的 StrongVPN 凭证登录
-- 选择需要的服务器
-- 下载 `.conf` 文件到 `~/Downloads/`
-
-**步骤 3：** 按 `i` 导入配置
-- 应用扫描 `~/Downloads/` 目录所有 .conf 文件
-- 显示文件列表，默认全部勾选
-- 用 `↑↓` 移动光标
-- 用 `Space` 切换勾选/取消勾选
-- 按 `a` 全选，`n` 全不选
-- 按 `Enter` 导入所有勾选的文件
-
-💡 **提示：** 详细说明请查看 [BROWSER_IMPORT.md](BROWSER_IMPORT.md)
-
-#### 2. 连接 VPN
-- 使用 `↑↓` 箭头键选择想要的服务器
-- 按 `Enter` 连接
-- 连接成功后，服务器前会显示 `●` 符号
-
-#### 3. 查看连接状态
-- 按 `s` 键查看详细的连接信息
-- 包括：IP 地址、流量统计、端点、握手信息等
-
-#### 4. 断开 VPN
-- 选中已连接的服务器
-- 按 `Enter` 断开连接
-
-#### 5. 删除配置
-- 选中配置文件
-- 按 `d` 删除（会自动断开连接）
-
-## 界面说明
+## 基本使用
 
 ### 主界面
-```
-🔒 WireGuard VPN Manager
 
-Available Servers:
-● server-1
-○ server-2
-○ server-3
+| 按键 | 操作 |
+| --- | --- |
+| `↑` / `k`、`↓` / `j` | 移动选择 |
+| `Home` / `End`、`PageUp` / `PageDown` | 快速导航 |
+| `Enter` | 连接所选配置；已连接时执行断开 |
+| `/` | 搜索服务器 |
+| `r` | 刷新配置与连接状态 |
+| `o` | 查看配置下载说明 |
+| `i` | 扫描并进入安全导入界面 |
+| `s` | 查看连接详情 |
+| `d` | 打开删除确认对话框 |
+| `?` | 打开快捷键帮助 |
+| `q` / `Ctrl+C` | 安全退出；变更操作进行中时会等待其收尾 |
 
-Status | ↑↓: Navigate | Enter: Connect/Disconnect | r: Download | d: Delete | s: Status | q: Quit
-```
+搜索时直接输入关键字，使用 `Backspace` 删除字符，`Enter` 接受结果，`Esc` 清除搜索并返回列表。各页面底部帮助栏会提示当前页面的常用快捷键，完整说明以本节和 `?` 帮助页为准。
 
-- **●** = 当前已连接的服务器
-- **○** = 可用的服务器
+### 下载说明
 
-### 连接状态界面
-显示以下信息：
-- 接口名称
-- 连接状态
-- 端点地址
-- 允许的 IP
-- 监听端口
-- 最后握手时间
-- 接收/发送流量
-- 公钥
+按 `o` 进入下载说明后：
 
-## 常见问题
+| 按键 | 操作 |
+| --- | --- |
+| `↑` / `↓` | 滚动说明 |
+| `b` | 在默认浏览器打开下载页面 |
+| `i` | 直接扫描下载目录并进入导入界面 |
+| `Esc` | 返回主界面 |
 
-### Q: 权限被拒绝？
-A: WireGuard 命令需要 sudo 权限。应用会自动提示输入密码。确保你的账户在 sudoers 文件中。
+### 导入配置
 
-### Q: 无法连接到服务器？
-A: 
-1. 检查网络连接
-2. 尝试连接到不同的服务器（不同时间服务器连接性不同）
-3. 查看详细的错误信息
+1. 按 `o` 查看下载地址，在浏览器中下载可信来源的 `.conf` 文件到 `Downloads`。
+2. 按 `i` 扫描候选文件。
+3. 使用 `↑` / `↓` 或 `j` / `k` 移动，`Space` 勾选或取消；`a` 全选，`n` 全不选。
+4. 按 `Enter` 导入。应用会逐个校验候选文件，并汇总成功、失败数量及首条失败原因。
+5. 如下载目录发生变化，按 `r` 重新扫描；按 `o` 返回下载说明。
+6. 按 `Esc` 取消并返回。
 
-### Q: 如何验证 VPN 连接？
-A: 
-1. 按 `s` 查看连接状态
-2. 查看 "Received" 和 "Sent" 的流量数据
-3. 访问 https://wg.strongtech.org/ipcheck 查看你的新 IP
+扫描器只接受大小受限、名称合法的普通 `.conf` 文件；导入前会重新读取并校验结构，拒绝命令 hook，然后以 root 所有、`0600` 权限原子安装。为避免静默替换正在使用的隧道，同名目标已存在时导入会失败，需先明确删除旧配置。批量导入界面提供结果汇总和首条失败原因；需要调查其余失败时，可缩小选择范围后重试。
 
-### Q: 配置文件在哪里？
-A: `/etc/wireguard/` 目录
+仍需自行确认文件来源。`wg-quick` 配置可包含以 root 身份执行的 `PreUp`、`PostUp`、`PreDown`、`PostDown` 命令；应用的拒绝规则是纵深防御，不能把不可信配置变安全。完整威胁模型见 [SECURITY.md](SECURITY.md)。
 
-## 架构
+### 删除配置
 
-```
-wireguard-tui/
-├── src/
-│   ├── main.rs       # 主入口、事件循环
-│   ├── app.rs        # 应用状态管理
-│   ├── ui.rs         # TUI 渲染
-│   ├── vpn.rs        # VPN 操作
-│   ├── download.rs   # 配置下载
-│   ├── config.rs     # 配置管理
-│   └── commands.rs   # 系统命令执行
-└── Cargo.toml
-```
+按 `d` 后会显示目标名称及确认对话框：
 
-## 技术栈
+- `y` / `Enter`：确认删除
+- `n` / `Esc`：取消
 
-- **ratatui** - TUI 框架
-- **tokio** - 异步运行时
-- **reqwest** - HTTP 客户端
-- **crossterm** - 终端操作
-- **serde** - 序列化
+若目标当前处于连接状态，应用必须先成功断开；断开失败时不会删除配置。
+
+### 状态与后台操作
+
+连接、断开、导入和状态探测在后台运行。操作中的目标会显示进度，重复的冲突操作会被拒绝；错误不会关闭 TUI。
+
+状态页使用 `↑` / `↓` 或 `j` / `k` 滚动，`r` 主动刷新、`Esc` 返回。刷新超时会保留上一次成功数据并标记为过期，而不会把超时误报为已断开。发现多个或未受当前配置列表管理的活动接口时，界面会明确显示异常集合并阻止静默切换。
 
 ## 故障排除
 
-### 调试日志
-如果遇到问题，可以使用 RUST_LOG 环境变量启用调试日志：
+### WireGuard 命令不存在
+
+应用不会自动安装软件。请安装发行版提供的 WireGuard 工具包，并确认：
 
 ```bash
-RUST_LOG=debug ./target/release/wireguard-tui
+wg --version
+wg-quick --help
 ```
 
-### 常见错误
+### 权限或 sudo 失败
 
-1. **"WireGuard not installed"**
-   - 应用会自动尝试安装
-   - 如果自动安装失败，请手动安装
+不要以 root 运行整个程序。退出后执行 `sudo -v`，确认成功，再重新启动 TUI。
 
-2. **"Failed to download configs"**
-   - 检查凭证是否正确
-   - 检查网络连接
-   - 访问下载页面验证账户
+### 找不到配置
 
-3. **"Permission denied"**
-   - 确保你有 sudo 权限
-   - 某些系统可能需要特殊配置
+- 本机配置目录为 `/etc/wireguard/`
+- 下载候选文件来自当前登录用户的 `Downloads` 目录
+- 检查文件扩展名、目录权限，以及界面中的导入汇总或首条失败原因
 
-## 支持
+### 连接成功但没有流量
 
-- 官方 WireGuard 文档：https://www.wireguard.com/
-- StrongVPN 支持：https://support.strongtech.org/hc/zh-cn/
-- 本项目问题反馈
+在状态页检查最新握手、Allowed IPs、端点和收发计数。DNS 是否按预期生效需使用系统的解析器或网络诊断工具另行确认。状态标记为过期时先按 `r` 刷新。
 
-## 许可证
+## 开发与检查
 
-MIT License
+```bash
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
+cargo build --locked --all-targets --all-features
+```
+
+## 安全与许可证
+
+安全问题请参阅 [SECURITY.md](SECURITY.md)，不要在公开 issue 中提交凭据或恶意配置样本。
+
+本项目采用 [MIT License](LICENSE)。

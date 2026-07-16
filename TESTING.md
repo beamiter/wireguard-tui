@@ -1,5 +1,8 @@
 # 测试指南
 
+> [!WARNING]
+> 这是已归档的早期测试记录，不适用于 v0.4（当前 MSRV 为 Rust 1.88）。请使用 [README.md](README.md) 中的锁文件检查命令。
+
 ## 环境要求
 
 - Linux 系统（Ubuntu 20.04+ 推荐）

@@ -1,4 +1,7 @@
 #!/bin/bash
+echo "Archived diagnostic: use the redacted troubleshooting flow in README.md/SECURITY.md." >&2
+exit 2
+
 # 测试 WireGuard 连接
 
 echo "=== Testing WireGuard Connection ==="

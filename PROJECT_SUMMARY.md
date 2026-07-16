@@ -1,5 +1,8 @@
 # WireGuard TUI 项目完成总结
 
+> [!WARNING]
+> 这是已归档的早期项目快照，不是 v0.4 的功能或安全说明；请以当前 [README.md](README.md) 为准。
+
 ## 项目概述
 
 ✨ 成功创建了一个功能完整的 **WireGuard VPN 管理器 TUI 应用**，用 Rust 编写，支持 Linux 系统。
@@ -162,8 +165,8 @@ cargo build --release
 ### 配置
 编辑 `~/.config/wireguard-tui/config.toml`:
 ```toml
-username = "a314393"
-password = "L7W8cXG3MH"
+username = "your-vpn-username"
+password = "your-vpn-password"
 ```
 
 ### 运行

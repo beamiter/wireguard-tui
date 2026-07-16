@@ -1,5 +1,8 @@
 # 自动配置生成功能
 
+> [!WARNING]
+> 这是已归档的 v0.2/v0.3 设计记录，不适用于 v0.4。不要按本文保存账号密码或执行命令；请只使用当前 [README.md](README.md) 与 [SECURITY.md](SECURITY.md)。
+
 ## 功能说明
 
 应用会在首次运行时**自动生成配置文件模板**，你只需要编辑它即可！
@@ -40,10 +43,10 @@ $ ./target/release/wireguard-tui
 # NOT your website login email/password!
 
 # Your StrongVPN username (starts with 'a')
-username = "a314393"
+username = "your-vpn-username"
 
 # Your StrongVPN password
-password = "L7W8cXG3MH"
+password = "your-vpn-password"
 
 # Automatically download configs on first run
 auto_download = true
@@ -133,9 +136,9 @@ Ready
 ```rust
 // 如果满足以下任一条件，认为凭证未配置：
 - username 为空
-- username 仍是模板值 "a314393"
+- username 仍是模板值 "your-vpn-username"
 - password 为空
-- password 仍是模板值 "L7W8cXG3MH"
+- password 仍是模板值 "your-vpn-password"
 ```
 
 ### 界面提示

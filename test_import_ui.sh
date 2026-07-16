@@ -1,4 +1,7 @@
 #!/bin/bash
+echo "Archived interactive capture helper: use cargo test and do not record raw TUI output." >&2
+exit 2
+
 # 测试导入功能的 UI 交互
 
 echo "=== Testing Import UI ==="

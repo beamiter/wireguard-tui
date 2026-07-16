@@ -1,4 +1,7 @@
 #!/bin/bash
+echo "Archived debug helper: do not capture raw TUI or WireGuard output; see SECURITY.md." >&2
+exit 2
+
 # 调试导入功能
 
 echo "=== Debug Import Functionality ==="
@@ -30,14 +33,16 @@ fi
 echo ""
 
 echo "4. Testing TUI import (with debug output)..."
-echo "   Run: RUST_LOG=debug sudo ./target/debug/wireguard-tui"
+echo "   Run: sudo -v"
+echo "        RUST_LOG=debug ./target/debug/wireguard-tui"
 echo "   Then press 'i' to see debug output"
 echo ""
 
 echo "=== Suggested Actions ==="
 echo ""
 echo "If scan test found files but TUI doesn't:"
-echo "  1. Run: sudo ./target/debug/wireguard-tui 2>&1 | tee tui-debug.log"
+echo "  1. Run: sudo -v"
+echo "          ./target/debug/wireguard-tui 2>&1 | tee tui-debug.log"
 echo "  2. Press 'i'"
 echo "  3. Check tui-debug.log for DEBUG messages"
 echo ""

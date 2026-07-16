@@ -1,5 +1,8 @@
 # 运行指南
 
+> [!WARNING]
+> 这是已归档的早期排障记录，不适用于 v0.4，也不应捕获或分享完整终端日志。请只使用当前 [README.md](README.md) 与 [SECURITY.md](SECURITY.md)。
+
 ## 问题诊断
 
 如果你遇到 "No .conf files found" 错误，但文件确实存在：
@@ -23,23 +26,25 @@ ls -la ~/Downloads/*.conf
 
 这会测试扫描逻辑是否正常。
 
-### 步骤 3：使用 sudo 运行应用
+### 步骤 3：预授权后以普通用户运行应用
 
-由于 WireGuard 配置在 `/etc/wireguard/`，应用需要 sudo 权限：
+WireGuard 操作需要有限的提权权限，但 TUI 本身应保持为普通用户进程：
 
 ```bash
-sudo ./target/debug/wireguard-tui
+sudo -v
+./target/debug/wireguard-tui
 ```
 
 或release 版本：
 
 ```bash
-sudo ./target/release/wireguard-tui
+sudo -v
+./target/release/wireguard-tui
 ```
 
 ### 步骤 4：测试导入功能
 
-1. 启动应用（用 sudo）
+1. 先执行 `sudo -v`，随后以普通用户启动应用
 2. 按 `i` 键
 3. 应该看到文件列表
 
@@ -60,7 +65,8 @@ sudo ./target/release/wireguard-tui
 运行时会在 stderr 输出调试信息：
 
 ```bash
-sudo ./target/debug/wireguard-tui 2>&1 | tee debug.log
+sudo -v
+./target/debug/wireguard-tui 2>&1 | tee debug.log
 ```
 
 然后按 `i`，你会看到：
@@ -77,23 +83,21 @@ DEBUG: scan_downloads returned 1 files
 
 ## 常见问题
 
-### Q: 为什么需要 sudo？
+### Q: 为什么需要 sudo 凭据？
 
 **A:** 因为：
 1. `/etc/wireguard/` 目录只有 root 可读写
 2. `wg-quick` 命令需要 root 权限
 3. 导入配置时需要复制文件到 `/etc/wireguard/`
 
-### Q: 能不用 sudo 运行吗？
+### Q: 能不做 sudo 预授权吗？
 
-**A:** 可以查看下载信息（按 `o`），但：
-- 无法导入配置
-- 无法连接 VPN
-- 无法查看已有配置
+**A:** 可以启动和浏览不需要提权的页面，但需要访问 `/etc/wireguard` 或管理接口的操作可能因非交互式 sudo 无可用凭据而失败。
 
-**解决方案：** 始终用 `sudo` 运行：
+**解决方案：** 先刷新 sudo 缓存，再以普通用户运行；不要把 sudo 直接放在 TUI 命令前：
 ```bash
-sudo ./target/release/wireguard-tui
+sudo -v
+./target/release/wireguard-tui
 ```
 
 ### Q: 扫描逻辑正确吗？
@@ -112,22 +116,24 @@ sudo ./target/release/wireguard-tui
 cargo build --release
 ```
 
-### 运行（重要：使用 sudo）
+### 运行（重要：仅预授权，TUI 使用普通用户）
 ```bash
-sudo ./target/release/wireguard-tui
+sudo -v
+./target/release/wireguard-tui
 ```
 
 ### 操作流程
 
 ```
-1. sudo ./target/release/wireguard-tui
-2. 按 'o' 查看下载信息
-3. 手动到浏览器下载配置
-4. 按 'i' 导入（会显示文件列表）
-5. Space 勾选/取消勾选
-6. Enter 导入
-7. ↑↓ 选择服务器
-8. Enter 连接
+1. `sudo -v`
+2. `./target/release/wireguard-tui`
+3. 按 'o' 查看下载信息
+4. 手动到浏览器下载配置
+5. 按 'i' 导入（会显示文件列表）
+6. Space 勾选/取消勾选
+7. Enter 导入
+8. ↑↓ 选择服务器
+9. Enter 连接
 ```
 
 ## 验证安装
@@ -166,8 +172,9 @@ rm -f ~/Downloads/test.conf
 echo "[Interface]" > ~/Downloads/test.conf
 echo "PrivateKey = test" >> ~/Downloads/test.conf
 
-# 3. 运行应用
-sudo ./target/debug/wireguard-tui 2>&1 | tee test.log &
+# 3. 预授权后以普通用户运行应用
+sudo -v
+./target/debug/wireguard-tui 2>&1 | tee test.log &
 
 # 4. 按 'i' 测试导入
 
@@ -191,7 +198,8 @@ grep "DEBUG" test.log
 
 3. **调试输出：**
    ```bash
-   sudo ./target/debug/wireguard-tui 2>&1 | tee full-debug.log
+   sudo -v
+   ./target/debug/wireguard-tui 2>&1 | tee full-debug.log
    # 按 'i'，然后 'q' 退出
    cat full-debug.log
    ```
@@ -203,4 +211,4 @@ grep "DEBUG" test.log
 
 ---
 
-**记住：** 必须用 `sudo` 运行才能完整使用所有功能！
+**记住：** 使用 `sudo -v` 只为后续受限操作预授权；TUI 始终由普通用户启动。

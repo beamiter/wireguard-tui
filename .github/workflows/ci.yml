@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Rust ${{ matrix.rust }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ["1.88.0", stable]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master, pinned 2026-07-15
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
+
+      - name: Cache Rust build data
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+
+      - name: Verify lockfile
+        run: cargo metadata --locked --no-deps --format-version 1 > /dev/null
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Build all targets
+        run: cargo build --locked --all-targets --all-features
+
+      - name: Verify publishable package
+        run: cargo package --locked

@@ -1,5 +1,8 @@
 # ✅ 最终更新：显示下载信息（不自动打开浏览器）
 
+> [!WARNING]
+> 这是已归档的 v0.3 快照。v0.4 不保存或显示服务商账号密码；请以当前 [README.md](README.md) 为准。
+
 ## 变更说明
 
 按照你的要求，**不真的打开浏览器**，而是在 TUI 界面中显示：
@@ -24,8 +27,8 @@
 │                                                                    │
 │ Step 2: Login with your credentials:                              │
 │                                                                    │
-│   Username: a314393                                                │
-│   Password: L7W8cXG3MH                                             │
+│   Username: your-vpn-username                                                │
+│   Password: your-vpn-password                                             │
 │                                                                    │
 │ ──────────────────────────────────────────────────────────────── │
 │                                                                    │
@@ -117,8 +120,8 @@ fn draw_download(f: &mut Frame, app: &App) {
 # 2. 按 'o' 查看信息
 # 界面显示：
 # - URL: https://tools.strongvpn.asia/share/strong-wg/strong-wg.html
-# - Username: a314393
-# - Password: L7W8cXG3MH
+# - Username: your-vpn-username
+# - Password: your-vpn-password
 
 # 3. 手动操作：
 #    - 复制 URL 到浏览器
