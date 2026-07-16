@@ -120,10 +120,7 @@ impl ConfigDownloader {
             bail!("Source is not a regular file: {}", source_path.display());
         }
         if metadata.len() > MAX_WIREGUARD_CONFIG_SIZE {
-            bail!(
-                "WireGuard configuration exceeds the {} byte limit",
-                MAX_WIREGUARD_CONFIG_SIZE
-            );
+            bail!("WireGuard configuration exceeds the {MAX_WIREGUARD_CONFIG_SIZE} byte limit");
         }
 
         let contents = read_limited(source_path, &metadata)?;
@@ -236,10 +233,7 @@ fn read_limited(path: &Path, expected_metadata: &fs::Metadata) -> Result<Vec<u8>
         bail!("Source is not a regular file: {}", path.display());
     }
     if opened_metadata.len() > MAX_WIREGUARD_CONFIG_SIZE {
-        bail!(
-            "WireGuard configuration exceeds the {} byte limit",
-            MAX_WIREGUARD_CONFIG_SIZE
-        );
+        bail!("WireGuard configuration exceeds the {MAX_WIREGUARD_CONFIG_SIZE} byte limit");
     }
 
     #[cfg(unix)]
@@ -269,10 +263,7 @@ fn read_limited(path: &Path, expected_metadata: &fs::Metadata) -> Result<Vec<u8>
         .with_context(|| format!("Failed to read configuration {}", path.display()))?;
 
     if contents.len() as u64 > MAX_WIREGUARD_CONFIG_SIZE {
-        bail!(
-            "WireGuard configuration exceeds the {} byte limit",
-            MAX_WIREGUARD_CONFIG_SIZE
-        );
+        bail!("WireGuard configuration exceeds the {MAX_WIREGUARD_CONFIG_SIZE} byte limit");
     }
 
     Ok(contents)
