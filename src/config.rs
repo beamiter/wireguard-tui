@@ -96,7 +96,11 @@ fn is_command_hook(key: &str) -> bool {
     matches!(key, "preup" | "postup" | "predown" | "postdown")
 }
 
-const REDACTED_SECRET: &str = "[redacted]";
+/// The single placeholder that both redaction paths must emit for a stripped
+/// secret: `redact_wireguard_secrets` in this process, and the privileged
+/// `sed` reader in `commands.rs`. Structural validation accepts only this
+/// spelling, so the two must never drift apart.
+pub(crate) const REDACTED_SECRET: &str = "[redacted]";
 const ZERO_WIREGUARD_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const MAX_VALIDATED_CONFIG_BYTES: usize = 64 * 1024;
 const MAX_APP_CONFIG_BYTES: u64 = 64 * 1024;

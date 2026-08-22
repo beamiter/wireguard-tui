@@ -29,8 +29,12 @@ const TRUSTED_EXECUTABLE_DIRS: [&str; 6] = [
     "/usr/local/bin",
     "/usr/local/sbin",
 ];
+// The replacement must spell the secret placeholder exactly as
+// `config::REDACTED_SECRET`; `validate_wireguard_client_config` rejects any
+// other spelling as a malformed key. `privileged_redaction_matches_shared_sentinel`
+// locks the two together.
 const SECRET_REDACTION_EXPRESSION: &str =
-    r"s/^([[:space:]]*(PrivateKey|PresharedKey)[[:space:]]*=[[:space:]]*).*/\1<redacted>/I";
+    r"s/^([[:space:]]*(PrivateKey|PresharedKey)[[:space:]]*=[[:space:]]*).*/\1[redacted]/I";
 const SECRET_VALIDATION_AWK: &str = r#"
 BEGIN { bad = 0 }
 {
@@ -1059,8 +1063,7 @@ mod tests {
         assert!(CommandExecutor::parse_stat_metadata("root 600 file").is_err());
     }
 
-    #[test]
-    fn privileged_redaction_removes_both_wireguard_secret_types() {
+    fn redact_with_sed(config: &[u8]) -> String {
         let sed = CommandExecutor::resolve_trusted_executable("sed").unwrap();
         let mut child = Command::new(sed)
             .args(["-E", "-e", super::SECRET_REDACTION_EXPRESSION])
@@ -1068,22 +1071,39 @@ mod tests {
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(
-                b"[Interface]\nPrivateKey = secret-one\n[Peer]\nPresharedKey=secret-two\nPublicKey = public\n",
-            )
-            .unwrap();
+        child.stdin.take().unwrap().write_all(config).unwrap();
         let output = child.wait_with_output().unwrap();
         assert!(output.status.success());
-        let output = String::from_utf8(output.stdout).unwrap();
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[test]
+    fn privileged_redaction_removes_both_wireguard_secret_types() {
+        let secret = crate::config::REDACTED_SECRET;
+        let output = redact_with_sed(
+            b"[Interface]\nPrivateKey = secret-one\n[Peer]\nPresharedKey=secret-two\nPublicKey = public\n",
+        );
         assert!(!output.contains("secret-one"));
         assert!(!output.contains("secret-two"));
-        assert!(output.contains("PrivateKey = <redacted>"));
-        assert!(output.contains("PresharedKey=<redacted>"));
+        assert!(output.contains(&format!("PrivateKey = {secret}")));
+        assert!(output.contains(&format!("PresharedKey={secret}")));
         assert!(output.contains("PublicKey = public"));
+    }
+
+    /// Every `wg-quick` operation revalidates the installed config, and a
+    /// root-owned config can only be read through the privileged reader. If the
+    /// two redaction paths spell the placeholder differently, structural
+    /// validation reads it as a malformed PrivateKey and no interface can be
+    /// brought up or torn down.
+    #[test]
+    fn privileged_redaction_matches_shared_sentinel() {
+        let output = redact_with_sed(
+            b"[Interface]\nPrivateKey = AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\nAddress = 10.0.0.2/32\n\
+              [Peer]\nPublicKey = AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\n\
+              PresharedKey = AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\n\
+              AllowedIPs = 0.0.0.0/0\nEndpoint = 192.0.2.1:51820\n",
+        );
+        crate::config::validate_wireguard_client_config(&output).unwrap();
     }
 
     #[test]
