@@ -2,12 +2,14 @@ use crate::commands::CommandExecutor;
 use anyhow::{anyhow, bail, Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::io::{Error, ErrorKind, Read, Write};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 const CONFIG_TEMPLATE: &str = r#"# WireGuard TUI Configuration File
 #
@@ -74,8 +76,288 @@ fn section_from_line(line: &str) -> Option<ConfigSection> {
     )
 }
 
+fn config_line(raw_line: &str) -> &str {
+    raw_line
+        .split_once('#')
+        .map_or(raw_line, |(value, _)| value)
+        .trim()
+}
+
+fn append_config_detail(target: &mut Option<String>, value: &str) {
+    if let Some(existing) = target {
+        existing.push_str(", ");
+        existing.push_str(value);
+    } else {
+        *target = Some(value.to_string());
+    }
+}
+
 fn is_command_hook(key: &str) -> bool {
     matches!(key, "preup" | "postup" | "predown" | "postdown")
+}
+
+const REDACTED_SECRET: &str = "[redacted]";
+const ZERO_WIREGUARD_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const MAX_VALIDATED_CONFIG_BYTES: usize = 64 * 1024;
+const MAX_APP_CONFIG_BYTES: u64 = 64 * 1024;
+const MAX_VALIDATED_CONFIG_LINES: usize = 4096;
+const MAX_VALIDATED_PEERS: usize = 256;
+
+#[derive(Clone, Copy)]
+enum WireGuardKeyRole {
+    Private,
+    Public,
+    Preshared,
+}
+
+fn validate_wireguard_key(
+    value: &str,
+    role: WireGuardKeyRole,
+    label: &str,
+    line_number: usize,
+) -> Result<()> {
+    let bytes = value.as_bytes();
+    let has_valid_alphabet = bytes.get(..42).is_some_and(|prefix| {
+        prefix
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'+' || *byte == b'/')
+    });
+    let has_canonical_tail = bytes
+        .get(42)
+        .is_some_and(|byte| b"AEIMQUYcgkosw048".contains(byte))
+        && bytes.get(43) == Some(&b'=');
+
+    if bytes.len() != 44 || !has_valid_alphabet || !has_canonical_tail {
+        bail!("{label} on line {line_number} is not a canonical WireGuard key");
+    }
+    if value == ZERO_WIREGUARD_KEY {
+        match role {
+            // `wg pubkey` clamps private scalar bytes and therefore accepts
+            // zero input, but the resulting key is public knowledge rather
+            // than secret key material.
+            WireGuardKeyRole::Private => {
+                bail!("{label} on line {line_number} is the weak all-zero private key");
+            }
+            // Zero is not a usable Curve25519 peer public key.
+            WireGuardKeyRole::Public => {
+                bail!("{label} on line {line_number} is an unusable all-zero public key");
+            }
+            // WireGuard uses an all-zero PSK to mean that preshared-key
+            // protection is disabled, so spelling it as a configured secret
+            // is misleading and fails closed.
+            WireGuardKeyRole::Preshared => {
+                bail!("{label} on line {line_number} is an unusable all-zero preshared key");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_ip_or_cidr_list(
+    value: &str,
+    label: &str,
+    line_number: usize,
+    require_prefix: bool,
+) -> Result<()> {
+    if value.is_empty() {
+        bail!("{label} on line {line_number} must not be empty");
+    }
+    for item in value.split(',') {
+        let cidr = item.trim();
+        if cidr.is_empty() {
+            bail!("{label} on line {line_number} contains an empty address entry");
+        }
+        if cidr.matches('/').count() > 1 {
+            bail!("{label} on line {line_number} contains a malformed CIDR");
+        }
+        let (address, prefix) = match cidr.split_once('/') {
+            Some((address, prefix)) if !address.is_empty() && !prefix.is_empty() => {
+                (address, Some(prefix))
+            }
+            Some(_) => bail!("{label} on line {line_number} contains a malformed CIDR"),
+            None if !require_prefix => (cidr, None),
+            None => bail!("{label} on line {line_number} must contain only CIDRs"),
+        };
+        let address: IpAddr = address
+            .parse()
+            .map_err(|_| anyhow!("{label} on line {line_number} contains an invalid IP address"))?;
+        if let Some(prefix) = prefix {
+            let prefix: u8 = prefix
+                .parse()
+                .map_err(|_| anyhow!("{label} on line {line_number} contains an invalid prefix"))?;
+            let maximum = if address.is_ipv4() { 32 } else { 128 };
+            if prefix > maximum {
+                bail!("{label} on line {line_number} contains an out-of-range prefix");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_port(value: &str, label: &str, line_number: usize, allow_zero: bool) -> Result<()> {
+    let port: u16 = value.parse().map_err(|_| {
+        anyhow!(
+            "{label} on line {line_number} must be an integer from {} to 65535",
+            if allow_zero { 0 } else { 1 }
+        )
+    })?;
+    if !allow_zero && port == 0 {
+        bail!("{label} on line {line_number} must be an integer from 1 to 65535");
+    }
+    Ok(())
+}
+
+fn validate_endpoint(value: &str, line_number: usize) -> Result<()> {
+    let (host, port, bracketed) = if let Some(without_open_bracket) = value.strip_prefix('[') {
+        let (host, port) = without_open_bracket
+            .split_once("]:")
+            .ok_or_else(|| anyhow!("Endpoint on line {line_number} must be host:port"))?;
+        (host, port, true)
+    } else {
+        let (host, port) = value
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow!("Endpoint on line {line_number} must be host:port"))?;
+        (host, port, false)
+    };
+    if host.is_empty()
+        || host.bytes().any(|byte| {
+            !byte.is_ascii_graphic() || matches!(byte, b'/' | b'?' | b'#' | b'@' | b'[' | b']')
+        })
+    {
+        bail!("Endpoint on line {line_number} contains an invalid host");
+    }
+    let valid_bracketed_host = if bracketed {
+        let (address, scope) = match host.split_once('%') {
+            Some((address, scope)) => (address, Some(scope)),
+            None => (host, None),
+        };
+        let valid_scope = scope.is_none_or(|scope| {
+            !scope.is_empty()
+                && scope.len() <= 15
+                && !scope.contains('%')
+                && scope
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+        });
+        address.parse::<std::net::Ipv6Addr>().is_ok() && valid_scope
+    } else {
+        host.parse::<std::net::Ipv4Addr>().is_ok() || valid_dns_hostname(host)
+    };
+    if (!bracketed && host.contains(':')) || !valid_bracketed_host {
+        bail!("Endpoint on line {line_number} contains an invalid host");
+    }
+    validate_port(port, "Endpoint port", line_number, false)
+}
+
+fn validate_mtu(value: &str, line_number: usize) -> Result<()> {
+    let mtu: u32 = value
+        .parse()
+        .map_err(|_| anyhow!("MTU on line {line_number} must be an integer from 1 to 65535"))?;
+    if !(1..=65_535).contains(&mtu) {
+        bail!("MTU on line {line_number} must be an integer from 1 to 65535");
+    }
+    Ok(())
+}
+
+fn validate_table(value: &str, line_number: usize) -> Result<()> {
+    if value.eq_ignore_ascii_case("auto") || value.eq_ignore_ascii_case("off") {
+        return Ok(());
+    }
+    if value.parse::<u32>().is_ok() {
+        return Ok(());
+    }
+    if value.is_empty()
+        || value.len() > 32
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+    {
+        bail!(
+            "Table on line {line_number} must be auto, off, a numeric ID, or a safe routing-table name"
+        );
+    }
+    Ok(())
+}
+
+fn validate_fwmark(value: &str, line_number: usize) -> Result<()> {
+    if value.eq_ignore_ascii_case("off") {
+        return Ok(());
+    }
+    let parsed = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .map_or_else(
+            || value.parse::<u32>(),
+            |digits| u32::from_str_radix(digits, 16),
+        );
+    parsed.map_err(|_| {
+        anyhow!("FwMark on line {line_number} must be off or a 32-bit decimal/hex value")
+    })?;
+    Ok(())
+}
+
+fn validate_save_config(value: &str, line_number: usize) -> Result<()> {
+    if value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false") {
+        Ok(())
+    } else {
+        bail!("SaveConfig on line {line_number} must be true or false")
+    }
+}
+
+fn key_is_supported(section: ConfigSection, key: &str) -> bool {
+    match section {
+        ConfigSection::Interface => matches!(
+            key,
+            "address"
+                | "dns"
+                | "privatekey"
+                | "listenport"
+                | "fwmark"
+                | "mtu"
+                | "table"
+                | "saveconfig"
+                | "preup"
+                | "postup"
+                | "predown"
+                | "postdown"
+        ),
+        ConfigSection::Peer => matches!(
+            key,
+            "publickey" | "presharedkey" | "allowedips" | "endpoint" | "persistentkeepalive"
+        ),
+        ConfigSection::Other => false,
+    }
+}
+
+fn valid_dns_hostname(host: &str) -> bool {
+    let hostname = host.strip_suffix('.').unwrap_or(host);
+    !hostname.is_empty()
+        && hostname.len() <= 253
+        && hostname.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+}
+
+fn singleton_label(section: ConfigSection, key: &str) -> Option<&'static str> {
+    match (section, key) {
+        (ConfigSection::Interface, "privatekey") => Some("PrivateKey"),
+        (ConfigSection::Interface, "listenport") => Some("ListenPort"),
+        (ConfigSection::Interface, "mtu") => Some("MTU"),
+        (ConfigSection::Interface, "table") => Some("Table"),
+        (ConfigSection::Interface, "fwmark") => Some("FwMark"),
+        (ConfigSection::Interface, "saveconfig") => Some("SaveConfig"),
+        (ConfigSection::Peer, "publickey") => Some("PublicKey"),
+        (ConfigSection::Peer, "presharedkey") => Some("PresharedKey"),
+        (ConfigSection::Peer, "endpoint") => Some("Endpoint"),
+        (ConfigSection::Peer, "persistentkeepalive") => Some("PersistentKeepalive"),
+        _ => None,
+    }
 }
 
 impl ConfigDetails {
@@ -85,7 +367,7 @@ impl ConfigDetails {
         let mut peer_sections = 0usize;
 
         for raw_line in content.lines() {
-            let line = raw_line.trim();
+            let line = config_line(raw_line);
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
@@ -105,13 +387,11 @@ impl ConfigDetails {
             let key = key.trim().to_ascii_lowercase();
             let value = value.trim();
             match (section, key.as_str()) {
-                (Some(ConfigSection::Interface), "address")
-                    if details.interface_address.is_none() =>
-                {
-                    details.interface_address = Some(value.to_string());
+                (Some(ConfigSection::Interface), "address") => {
+                    append_config_detail(&mut details.interface_address, value);
                 }
-                (Some(ConfigSection::Interface), "dns") if details.dns.is_none() => {
-                    details.dns = Some(value.to_string());
+                (Some(ConfigSection::Interface), "dns") => {
+                    append_config_detail(&mut details.dns, value);
                 }
                 (Some(ConfigSection::Interface), "privatekey") => {
                     details.private_key_configured |= !value.is_empty();
@@ -126,10 +406,8 @@ impl ConfigDetails {
                 {
                     details.endpoint = Some(value.to_string());
                 }
-                (Some(ConfigSection::Peer), "allowedips")
-                    if peer_sections == 1 && details.allowed_ips.is_none() =>
-                {
-                    details.allowed_ips = Some(value.to_string());
+                (Some(ConfigSection::Peer), "allowedips") if peer_sections == 1 => {
+                    append_config_detail(&mut details.allowed_ips, value);
                 }
                 (Some(ConfigSection::Peer), "persistentkeepalive")
                     if peer_sections == 1 && details.persistent_keepalive.is_none() =>
@@ -148,8 +426,24 @@ impl ConfigDetails {
 /// configuration. Command hooks are deliberately rejected because `wg-quick`
 /// executes them with the privileges used to bring the interface up.
 pub fn validate_wireguard_client_config(content: &str) -> Result<ConfigDetails> {
+    validate_wireguard_client_config_inner(content, true)
+}
+
+/// Validate an unredacted import candidate, including the canonical 32-byte
+/// encoding of every private, public, and preshared key.
+pub fn validate_wireguard_client_config_for_import(content: &str) -> Result<ConfigDetails> {
+    validate_wireguard_client_config_inner(content, false)
+}
+
+fn validate_wireguard_client_config_inner(
+    content: &str,
+    allow_redacted_secrets: bool,
+) -> Result<ConfigDetails> {
     if content.is_empty() {
         bail!("WireGuard configuration is empty");
+    }
+    if content.len() > MAX_VALIDATED_CONFIG_BYTES {
+        bail!("WireGuard configuration exceeds the 65536 byte validation limit");
     }
 
     if content
@@ -164,10 +458,19 @@ pub fn validate_wireguard_client_config(content: &str) -> Result<ConfigDetails> 
     let mut peer_sections = 0usize;
     let mut interface_private_key = false;
     let mut peer_public_keys: Vec<bool> = Vec::new();
+    let mut unique_peer_public_keys = HashSet::new();
+    let mut interface_fields = HashSet::new();
+    let mut peer_fields: Vec<HashSet<String>> = Vec::new();
 
     for (line_index, raw_line) in content.lines().enumerate() {
         let line_number = line_index + 1;
-        let line = raw_line.trim();
+        if line_number > MAX_VALIDATED_CONFIG_LINES {
+            bail!("WireGuard configuration exceeds the 4096 line validation limit");
+        }
+        // wg-quick accepts comments after values. None of the validated key,
+        // IP, endpoint, or base64 alphabets contains '#', so stripping from
+        // the first marker is unambiguous and never exposes the discarded text.
+        let line = config_line(raw_line);
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -182,7 +485,11 @@ pub fn validate_wireguard_client_config(content: &str) -> Result<ConfigDetails> 
                 }
                 ConfigSection::Peer => {
                     peer_sections += 1;
+                    if peer_sections > MAX_VALIDATED_PEERS {
+                        bail!("WireGuard configuration exceeds the 256 peer validation limit");
+                    }
                     peer_public_keys.push(false);
+                    peer_fields.push(HashSet::new());
                 }
                 ConfigSection::Other => {
                     bail!("Unsupported configuration section on line {line_number}");
@@ -191,28 +498,125 @@ pub fn validate_wireguard_client_config(content: &str) -> Result<ConfigDetails> 
             section = Some(next_section);
             continue;
         }
+        if line.starts_with('[') || (line.ends_with(']') && !line.contains('=')) {
+            bail!("Malformed configuration section on line {line_number}");
+        }
 
         let (key, value) = line
             .split_once('=')
             .ok_or_else(|| anyhow!("Malformed configuration line {line_number}"))?;
-        let key = key.trim().to_ascii_lowercase();
+        let key = key.trim();
         let value = value.trim();
+        if key.len() > 64 {
+            bail!("Configuration key on line {line_number} exceeds the 64 byte limit");
+        }
+        if key.is_empty() || !key.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+            bail!("Invalid configuration key on line {line_number}");
+        }
+        let key = key.to_ascii_lowercase();
 
         if is_command_hook(&key) {
             bail!("wg-quick command hook '{key}' is not allowed");
         }
 
+        if let Some(current_section) = section {
+            if !key_is_supported(current_section, &key) {
+                let section_label = match current_section {
+                    ConfigSection::Interface => "[Interface]",
+                    ConfigSection::Peer => "[Peer]",
+                    ConfigSection::Other => unreachable!(),
+                };
+                bail!("Unsupported {section_label} key on line {line_number}");
+            }
+        }
+
+        if let Some(current_section) = section {
+            if let Some(label) = singleton_label(current_section, &key) {
+                let fields = match current_section {
+                    ConfigSection::Interface => &mut interface_fields,
+                    ConfigSection::Peer => peer_fields
+                        .last_mut()
+                        .expect("peer field state follows peer section"),
+                    ConfigSection::Other => unreachable!("other sections are rejected above"),
+                };
+                if !fields.insert(key.clone()) {
+                    let section_label = match current_section {
+                        ConfigSection::Interface => "[Interface]".to_string(),
+                        ConfigSection::Peer => format!("[Peer] {peer_sections}"),
+                        ConfigSection::Other => unreachable!(),
+                    };
+                    bail!("{section_label} repeats {label} on line {line_number}");
+                }
+            }
+        }
+
         match section {
             Some(ConfigSection::Interface) => {
-                if key == "privatekey" && !value.is_empty() {
+                if key == "address" {
+                    validate_ip_or_cidr_list(value, "[Interface] Address", line_number, false)?;
+                } else if key == "listenport" {
+                    validate_port(value, "[Interface] ListenPort", line_number, true)?;
+                } else if key == "mtu" {
+                    validate_mtu(value, line_number)?;
+                } else if key == "table" {
+                    validate_table(value, line_number)?;
+                } else if key == "fwmark" {
+                    validate_fwmark(value, line_number)?;
+                } else if key == "saveconfig" {
+                    validate_save_config(value, line_number)?;
+                }
+                if key == "privatekey" {
+                    if value.is_empty() {
+                        bail!("[Interface] PrivateKey on line {line_number} must not be empty");
+                    }
+                    if !(allow_redacted_secrets && value == REDACTED_SECRET) {
+                        validate_wireguard_key(
+                            value,
+                            WireGuardKeyRole::Private,
+                            "[Interface] PrivateKey",
+                            line_number,
+                        )?;
+                    }
                     interface_private_key = true;
                 }
             }
             Some(ConfigSection::Peer) => {
-                if key == "publickey" && !value.is_empty() {
+                if key == "publickey" {
                     if let Some(public_key) = peer_public_keys.last_mut() {
+                        if value.is_empty() {
+                            bail!("[Peer] {peer_sections} PublicKey on line {line_number} must not be empty");
+                        }
+                        validate_wireguard_key(
+                            value,
+                            WireGuardKeyRole::Public,
+                            &format!("[Peer] {peer_sections} PublicKey"),
+                            line_number,
+                        )?;
+                        if !unique_peer_public_keys.insert(value.to_string()) {
+                            bail!(
+                                "[Peer] {peer_sections} repeats a PublicKey used by another peer"
+                            );
+                        }
                         *public_key = true;
                     }
+                } else if key == "presharedkey" {
+                    if value.is_empty() {
+                        bail!("[Peer] {peer_sections} PresharedKey on line {line_number} must not be empty");
+                    }
+                    if !(allow_redacted_secrets && value == REDACTED_SECRET) {
+                        validate_wireguard_key(
+                            value,
+                            WireGuardKeyRole::Preshared,
+                            &format!("[Peer] {peer_sections} PresharedKey"),
+                            line_number,
+                        )?;
+                    }
+                } else if key == "allowedips" {
+                    validate_ip_or_cidr_list(value, "[Peer] AllowedIPs", line_number, true)?;
+                } else if key == "endpoint" {
+                    validate_endpoint(value, line_number)?;
+                } else if key == "persistentkeepalive" && !value.eq_ignore_ascii_case("off") {
+                    validate_port(value, "[Peer] PersistentKeepalive", line_number, true)?;
                 }
             }
             Some(ConfigSection::Other) => unreachable!("other sections are rejected above"),
@@ -298,6 +702,21 @@ impl ConfigManager {
                 if !metadata.file_type().is_file() {
                     bail!("Application config path is not a regular file");
                 }
+                if metadata.len() > MAX_APP_CONFIG_BYTES {
+                    bail!(
+                        "Application config exceeds the {MAX_APP_CONFIG_BYTES} byte safety limit"
+                    );
+                }
+                #[cfg(unix)]
+                {
+                    let effective_uid = unsafe { libc::geteuid() };
+                    if metadata.uid() != effective_uid {
+                        bail!("Application config must be owned by the current user");
+                    }
+                    if metadata.nlink() != 1 {
+                        bail!("Application config must have exactly one hard link");
+                    }
+                }
                 set_private_file_permissions(&self.config_path)?;
             }
             Err(error) => return Err(error).context("Failed to create application config"),
@@ -308,7 +727,8 @@ impl ConfigManager {
 
     pub fn load_config(&self) -> Result<AppConfig> {
         self.ensure_config_exists()?;
-        let content = fs::read_to_string(&self.config_path)?;
+        let content = read_installed_config_limited(&self.config_path)
+            .context("Failed to read application config safely")?;
         let fields: toml::Table = toml::from_str(&content).map_err(|error: toml::de::Error| {
             let location = error
                 .span()
@@ -328,20 +748,8 @@ impl ConfigManager {
     }
 
     fn remove_obsolete_fields(&self) -> Result<()> {
-        let mut options = OpenOptions::new();
-        options.write(true).truncate(true);
-        #[cfg(unix)]
-        options.custom_flags(libc::O_NOFOLLOW);
-
-        let mut file = options
-            .open(&self.config_path)
-            .context("Failed to migrate obsolete application config fields")?;
-        file.write_all(CONFIG_TEMPLATE.as_bytes())
-            .context("Failed to remove obsolete application config fields")?;
-        file.sync_all()
-            .context("Failed to persist migrated application config")?;
-        set_private_file_permissions(&self.config_path)?;
-        Ok(())
+        atomic_replace_app_config(&self.config_path, CONFIG_TEMPLATE.as_bytes())
+            .context("Failed to migrate obsolete application config fields")
     }
 
     pub fn get_wg_config_dir(&self) -> &Path {
@@ -396,7 +804,7 @@ impl ConfigManager {
         Ok(configs)
     }
 
-    pub fn get_config_path(&self, name: &str) -> PathBuf {
+    fn get_config_path(&self, name: &str) -> PathBuf {
         self.wg_config_dir.join(format!("{name}.conf"))
     }
 
@@ -426,7 +834,7 @@ impl ConfigManager {
 
     fn read_config_for_inspection(&self, name: &str) -> Result<String> {
         let path = self.checked_config_path(name)?;
-        match fs::read_to_string(&path) {
+        match read_installed_config_limited(&path) {
             Ok(content) => Ok(redact_wireguard_secrets(&content)),
             Err(error) if error.kind() == ErrorKind::PermissionDenied => {
                 // The privileged reader performs the same redaction before its
@@ -438,9 +846,122 @@ impl ConfigManager {
     }
 }
 
+fn atomic_replace_app_config(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| invalid_config_data("application config has no valid file name"))?;
+    let mut temporary = None;
+    for attempt in 0..32_u32 {
+        let candidate = parent.join(format!(
+            ".{file_name}.wireguard-tui-{}-{attempt}.tmp",
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        match options.open(&candidate) {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let (temporary_path, mut file) = temporary.ok_or_else(|| {
+        Error::new(
+            ErrorKind::AlreadyExists,
+            "unable to allocate a unique application config temporary file",
+        )
+    })?;
+    let transaction = (|| -> std::io::Result<()> {
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary_path, path)?;
+        set_private_file_permissions(path)?;
+        fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if transaction.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    transaction
+}
+
+fn invalid_config_data(message: impl Into<String>) -> Error {
+    Error::new(ErrorKind::InvalidData, message.into())
+}
+
+fn read_installed_config_limited(path: &Path) -> std::io::Result<String> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK | libc::O_NOCTTY);
+
+    let mut file = options.open(path)?;
+    let before = file.metadata()?;
+    if !before.file_type().is_file() {
+        return Err(invalid_config_data(
+            "installed config is not a regular file",
+        ));
+    }
+    if before.len() > MAX_VALIDATED_CONFIG_BYTES as u64 {
+        return Err(invalid_config_data(format!(
+            "installed config exceeds the {MAX_VALIDATED_CONFIG_BYTES} byte inspection limit"
+        )));
+    }
+
+    let mut bytes = Vec::with_capacity(before.len() as usize);
+    Read::by_ref(&mut file)
+        .take(MAX_VALIDATED_CONFIG_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_VALIDATED_CONFIG_BYTES {
+        return Err(invalid_config_data(format!(
+            "installed config exceeds the {MAX_VALIDATED_CONFIG_BYTES} byte inspection limit"
+        )));
+    }
+
+    let after = file.metadata()?;
+    let linked = fs::symlink_metadata(path)?;
+    if !linked.file_type().is_file()
+        || before.len() != after.len()
+        || after.len() != bytes.len() as u64
+    {
+        return Err(invalid_config_data(
+            "installed config changed while it was being inspected",
+        ));
+    }
+    #[cfg(unix)]
+    if before.dev() != after.dev()
+        || before.ino() != after.ino()
+        || before.mtime() != after.mtime()
+        || before.mtime_nsec() != after.mtime_nsec()
+        || before.ctime() != after.ctime()
+        || before.ctime_nsec() != after.ctime_nsec()
+        || after.dev() != linked.dev()
+        || after.ino() != linked.ino()
+    {
+        return Err(invalid_config_data(
+            "installed config changed while it was being inspected",
+        ));
+    }
+
+    String::from_utf8(bytes).map_err(|_| invalid_config_data("installed config is not UTF-8"))
+}
+
 fn redact_wireguard_secrets(content: &str) -> String {
     let mut redacted = String::with_capacity(content.len());
-    for line in content.lines() {
+    for segment in content.split_inclusive('\n') {
+        let (line_with_optional_cr, newline) = segment
+            .strip_suffix('\n')
+            .map_or((segment, ""), |line| (line, "\n"));
+        let (line, carriage_return) = line_with_optional_cr
+            .strip_suffix('\r')
+            .map_or((line_with_optional_cr, ""), |line| (line, "\r"));
         let replacement = line.split_once('=').and_then(|(key, _)| {
             matches!(
                 key.trim().to_ascii_lowercase().as_str(),
@@ -449,7 +970,8 @@ fn redact_wireguard_secrets(content: &str) -> String {
             .then(|| format!("{key}= [redacted]"))
         });
         redacted.push_str(replacement.as_deref().unwrap_or(line));
-        redacted.push('\n');
+        redacted.push_str(carriage_return);
+        redacted.push_str(newline);
     }
     redacted
 }
@@ -474,8 +996,10 @@ fn set_private_file_permissions(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        redact_wireguard_secrets, validate_interface_name, validate_wireguard_client_config,
-        AppConfig, ConfigDetails, ConfigManager, CONFIG_TEMPLATE,
+        read_installed_config_limited, redact_wireguard_secrets, validate_interface_name,
+        validate_wireguard_client_config, validate_wireguard_client_config_for_import, AppConfig,
+        ConfigDetails, ConfigManager, CONFIG_TEMPLATE, MAX_APP_CONFIG_BYTES,
+        MAX_VALIDATED_CONFIG_BYTES, ZERO_WIREGUARD_KEY,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -512,7 +1036,7 @@ mod tests {
 [Peer]
 Address = peer-address-must-not-win
 PublicKey = first-server-key
-Endpoint = 108.171.121.213:58493
+Endpoint = 108.171.121.213:58493 # nearest edge
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 
@@ -559,26 +1083,342 @@ AllowedIPs = 10.0.0.0/8
     }
 
     #[test]
+    fn details_aggregate_repeatable_fields_without_mixing_peers() {
+        let details = ConfigDetails::from_wireguard_config(
+            "[Interface]\nAddress=10.0.0.2/32\nAddress=2001:db8::2/128\nDNS=1.1.1.1\nDNS=corp.example\n[Peer]\nPublicKey=first\nAllowedIPs=0.0.0.0/1\nAllowedIPs=128.0.0.0/1\n[Peer]\nPublicKey=second\nAllowedIPs=10.0.0.0/8\n",
+        );
+        assert_eq!(
+            details.interface_address.as_deref(),
+            Some("10.0.0.2/32, 2001:db8::2/128")
+        );
+        assert_eq!(details.dns.as_deref(), Some("1.1.1.1, corp.example"));
+        assert_eq!(
+            details.allowed_ips.as_deref(),
+            Some("0.0.0.0/1, 128.0.0.0/1")
+        );
+    }
+
+    #[test]
     fn inspection_redacts_all_private_key_spellings() {
-        let content = "[Interface]\n PrivateKey = top-secret\n[Peer]\nPRESHAREDKEY=shared-secret\nPublicKey = public\n";
+        let content = "[Interface]\n PrivateKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\n[Peer]\nPRESHAREDKEY=AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=\nPublicKey = AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\n";
         let redacted = redact_wireguard_secrets(content);
-        assert!(!redacted.contains("top-secret"));
-        assert!(!redacted.contains("shared-secret"));
+        assert!(!redacted.contains("AQEBAQEB"));
+        assert!(!redacted.contains("AwMDAwMD"));
         assert!(redacted.contains(" PrivateKey = [redacted]"));
-        assert!(validate_wireguard_client_config(&redacted).is_ok());
+        validate_wireguard_client_config(&redacted).unwrap();
+        assert!(validate_wireguard_client_config_for_import(&redacted).is_err());
+    }
+
+    #[test]
+    fn inspection_redaction_preserves_line_endings_and_final_newline_state() {
+        let content = "[Interface]\r\nPrivateKey = secret\r\n[Peer]\r\nPresharedKey=other";
+        let redacted = redact_wireguard_secrets(content);
+        assert_eq!(
+            redacted,
+            "[Interface]\r\nPrivateKey = [redacted]\r\n[Peer]\r\nPresharedKey= [redacted]"
+        );
+        assert!(!redacted.ends_with('\n'));
+        assert!(!redacted.contains("secret"));
+        assert!(!redacted.contains("other"));
     }
 
     #[test]
     fn rejects_every_wg_quick_command_hook() {
         for hook in ["PreUp", "PostUp", "PreDown", "PostDown"] {
             let content = format!(
-                "[Interface]\nPrivateKey = secret\n{hook} = id\n[Peer]\nPublicKey = peer-key\n"
+                "[Interface]\nPrivateKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\n{hook} = id\n[Peer]\nPublicKey = AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\n"
             );
             let error = validate_wireguard_client_config(&content).unwrap_err();
             assert!(
                 error.to_string().contains("hook"),
                 "unexpected error: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn import_validation_rejects_noncanonical_and_role_specific_zero_keys() {
+        let peer = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
+        let valid_private = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+        let malformed = format!("[Interface]\nPrivateKey = short\n[Peer]\nPublicKey = {peer}\n");
+        assert!(validate_wireguard_client_config_for_import(&malformed)
+            .unwrap_err()
+            .to_string()
+            .contains("canonical WireGuard key"));
+
+        for (content, expected) in [
+            (
+                format!(
+                    "[Interface]\nPrivateKey = {ZERO_WIREGUARD_KEY}\n[Peer]\nPublicKey = {peer}\n"
+                ),
+                "weak all-zero private key",
+            ),
+            (
+                format!(
+                    "[Interface]\nPrivateKey = {valid_private}\n[Peer]\nPublicKey = {ZERO_WIREGUARD_KEY}\n"
+                ),
+                "unusable all-zero public key",
+            ),
+            (
+                format!(
+                    "[Interface]\nPrivateKey = {valid_private}\n[Peer]\nPublicKey = {peer}\nPresharedKey = {ZERO_WIREGUARD_KEY}\n"
+                ),
+                "unusable all-zero preshared key",
+            ),
+        ] {
+            assert!(validate_wireguard_client_config_for_import(&content)
+                .unwrap_err()
+                .to_string()
+                .contains(expected));
+        }
+    }
+
+    #[test]
+    fn import_validation_rejects_duplicate_private_public_and_preshared_keys() {
+        let peer = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
+        let second_peer = "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=";
+        let valid_private = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+        let preshared = "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=";
+
+        for (content, expected) in [
+            (
+                format!(
+                    "[Interface]\nPrivateKey = {valid_private}\nPrivateKey = {valid_private}\n[Peer]\nPublicKey = {peer}\n"
+                ),
+                "repeats PrivateKey",
+            ),
+            (
+                format!(
+                    "[Interface]\nPrivateKey = {valid_private}\n[Peer]\nPublicKey = {peer}\nPublicKey = {second_peer}\n"
+                ),
+                "repeats PublicKey",
+            ),
+            (
+                format!(
+                    "[Interface]\nPrivateKey = {valid_private}\n[Peer]\nPublicKey = {peer}\nPresharedKey = {preshared}\nPresharedKey = {preshared}\n"
+                ),
+                "repeats PresharedKey",
+            ),
+            (
+                format!(
+                    "[Interface]\nPrivateKey = {valid_private}\nFwMark = off\nFwMark = 1\n[Peer]\nPublicKey = {peer}\n"
+                ),
+                "repeats FwMark",
+            ),
+            (
+                format!(
+                    "[Interface]\nPrivateKey = {valid_private}\nSaveConfig = true\nSaveConfig = false\n[Peer]\nPublicKey = {peer}\n"
+                ),
+                "repeats SaveConfig",
+            ),
+        ] {
+            assert!(validate_wireguard_client_config_for_import(&content)
+                .unwrap_err()
+                .to_string()
+                .contains(expected));
+        }
+    }
+
+    #[test]
+    fn import_validation_rejects_public_keys_reused_across_peers() {
+        let content = minimal_config(
+            "",
+            "[Peer]\nPublicKey = AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\n",
+        );
+        let error = validate_wireguard_client_config_for_import(&content)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("used by another peer"));
+        assert!(!error.contains("AgICAg"));
+    }
+
+    fn minimal_config(interface_fields: &str, peer_fields: &str) -> String {
+        format!(
+            "[Interface]\nPrivateKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\n{interface_fields}[Peer]\nPublicKey = AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\n{peer_fields}"
+        )
+    }
+
+    #[test]
+    fn validates_network_fields_without_exposing_values_in_errors() {
+        let valid = minimal_config(
+            "Address = 10.0.0.2, 2001:db8::2/128\nListenPort = 0\n",
+            "AllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = vpn_gateway.example.test.:51820\nPersistentKeepalive = off\n",
+        );
+        validate_wireguard_client_config_for_import(&valid).unwrap();
+
+        for (interface_fields, peer_fields, expected) in [
+            ("Address = not-an-ip\n", "", "invalid IP address"),
+            ("Address = 10.0.0.2/33\n", "", "out-of-range prefix"),
+            ("", "AllowedIPs = ::/129\n", "out-of-range prefix"),
+            ("", "Endpoint = vpn.example.test\n", "host:port"),
+            ("", "Endpoint = vpn.example.test:0\n", "1 to 65535"),
+            ("", "Endpoint = 2001:db8::1:51820\n", "invalid host"),
+            ("", "Endpoint = [fe80::1%]:51820\n", "invalid host"),
+            (
+                "",
+                "Endpoint = [fe80::1%eth0%other]:51820\n",
+                "invalid host",
+            ),
+            (
+                "",
+                "Endpoint = [fe80::1%interface-name-too-long]:51820\n",
+                "invalid host",
+            ),
+            ("", "Endpoint = vpn.example;test:51820\n", "invalid host"),
+            ("", "Endpoint = vpn..example:51820\n", "invalid host"),
+            ("", "Endpoint = -vpn.example:51820\n", "invalid host"),
+            ("ListenPort = 65536\n", "", "0 to 65535"),
+            ("", "PersistentKeepalive = -1\n", "0 to 65535"),
+        ] {
+            let error = validate_wireguard_client_config_for_import(&minimal_config(
+                interface_fields,
+                peer_fields,
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains(expected), "unexpected error: {error}");
+            assert!(!error.contains("AQEBAQEB"));
+        }
+    }
+
+    #[test]
+    fn accepts_repeatable_wg_quick_fields_and_inline_comments() {
+        let content = minimal_config(
+            "Address = 10.0.0.2/32 # tunnel address\nAddress = 2001:db8::2 # IPv6\nDNS = 1.1.1.1\nDNS = corp.example.test # search domain\n",
+            "AllowedIPs = 0.0.0.0/1\nAllowedIPs = 128.0.0.0/1 # split default route\nEndpoint = [fe80::1%eth0]:51820 # selected edge\nPersistentKeepalive = OFF\n",
+        );
+        validate_wireguard_client_config_for_import(&content).unwrap();
+    }
+
+    #[test]
+    fn accepts_documented_wg_and_wg_quick_interface_fields() {
+        for interface_fields in [
+            "MTU = 1420\nTable = auto\nSaveConfig = true\nFwMark = 0xca6c\n",
+            "Table = off\nSaveConfig = FALSE\nFwMark = off\n",
+            "Table = main\nFwMark = 51820\n",
+        ] {
+            validate_wireguard_client_config_for_import(&minimal_config(interface_fields, ""))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_cidrs_interface_options_and_unknown_keys() {
+        for (interface_fields, peer_fields, expected) in [
+            ("Address = 10.0.0.1/\n", "", "malformed CIDR"),
+            ("Address = 10.0.0.1/24/7\n", "", "malformed CIDR"),
+            ("Address = 10.0.0.1,,10.0.0.2\n", "", "empty address entry"),
+            ("MTU = 0\n", "", "1 to 65535"),
+            ("MTU = 65536\n", "", "1 to 65535"),
+            ("Table = ../../escape\n", "", "safe routing-table name"),
+            ("FwMark = 0x100000000\n", "", "32-bit"),
+            ("SaveConfig = yes\n", "", "true or false"),
+            ("UnknownOption = value\n", "", "Unsupported [Interface] key"),
+            ("", "UnknownOption = value\n", "Unsupported [Peer] key"),
+        ] {
+            let error = validate_wireguard_client_config_for_import(&minimal_config(
+                interface_fields,
+                peer_fields,
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains(expected), "unexpected error: {error}");
+            assert!(!error.contains("AQEBAQEB"));
+        }
+
+        let oversized_key = "K".repeat(65_000);
+        let content = minimal_config(&format!("{oversized_key} = value\n"), "");
+        let error = validate_wireguard_client_config_for_import(&content)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("key on line"));
+        assert!(error.contains("64 byte limit"));
+        assert!(!error.contains(&oversized_key));
+    }
+
+    #[test]
+    fn rejects_ambiguous_singletons_and_malformed_syntax() {
+        for (interface_fields, peer_fields, expected) in [
+            (
+                "",
+                "Endpoint = one.test:1\nEndpoint = two.test:2\n",
+                "repeats Endpoint",
+            ),
+            ("Bad-Key = value\n", "", "Invalid configuration key"),
+        ] {
+            let error = validate_wireguard_client_config_for_import(&minimal_config(
+                interface_fields,
+                peer_fields,
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains(expected), "unexpected error: {error}");
+        }
+
+        let malformed_section = minimal_config("[Broken\n", "");
+        assert!(
+            validate_wireguard_client_config_for_import(&malformed_section)
+                .unwrap_err()
+                .to_string()
+                .contains("Malformed configuration section")
+        );
+    }
+
+    #[test]
+    fn caps_parser_work_for_direct_and_installed_configs() {
+        let mut too_many_lines = String::new();
+        for _ in 0..4097 {
+            too_many_lines.push('\n');
+        }
+        too_many_lines.push_str(&minimal_config("", ""));
+        assert!(validate_wireguard_client_config_for_import(&too_many_lines)
+            .unwrap_err()
+            .to_string()
+            .contains("line validation limit"));
+
+        let mut too_many_peers = String::from(
+            "[Interface]\nPrivateKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\n",
+        );
+        for _ in 0..257 {
+            too_many_peers.push_str("[Peer]\n");
+        }
+        assert!(validate_wireguard_client_config_for_import(&too_many_peers)
+            .unwrap_err()
+            .to_string()
+            .contains("peer validation limit"));
+
+        let oversized = "x".repeat(MAX_VALIDATED_CONFIG_BYTES + 1);
+        assert!(validate_wireguard_client_config(&oversized)
+            .unwrap_err()
+            .to_string()
+            .contains("byte validation limit"));
+    }
+
+    #[test]
+    fn installed_config_reader_is_bounded_utf8_and_nofollow() {
+        let root = TestDirectory::new("bounded-installed-reader");
+        let valid = root.0.join("valid.conf");
+        fs::write(&valid, "[Interface]\nPrivateKey = secret\n").unwrap();
+        assert_eq!(
+            read_installed_config_limited(&valid).unwrap(),
+            "[Interface]\nPrivateKey = secret\n"
+        );
+
+        let non_utf8 = root.0.join("non-utf8.conf");
+        fs::write(&non_utf8, [0xff]).unwrap();
+        assert!(read_installed_config_limited(&non_utf8).is_err());
+
+        let oversized = root.0.join("oversized.conf");
+        let file = fs::File::create(&oversized).unwrap();
+        file.set_len(MAX_VALIDATED_CONFIG_BYTES as u64 + 1).unwrap();
+        assert!(read_installed_config_limited(&oversized).is_err());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let link = root.0.join("linked.conf");
+            symlink(&valid, &link).unwrap();
+            assert!(read_installed_config_limited(&link).is_err());
         }
     }
 
@@ -630,6 +1470,9 @@ AllowedIPs = 10.0.0.0/8
         let migrated = fs::read_to_string(&config_path).unwrap();
         assert_eq!(migrated, CONFIG_TEMPLATE);
         assert!(!migrated.contains("alice"));
+        assert!(fs::read_dir(&config_dir)
+            .unwrap()
+            .all(|entry| entry.unwrap().file_name() == "config.toml"));
 
         #[cfg(unix)]
         assert_eq!(
@@ -679,6 +1522,33 @@ AllowedIPs = 10.0.0.0/8
             assert_eq!(directory_mode, 0o700);
             assert_eq!(file_mode, 0o600);
         }
+    }
+
+    #[test]
+    fn rejects_oversized_application_config_before_parsing() {
+        let root = TestDirectory::new("oversized-app-config");
+        let config_dir = root.0.join("app-config");
+        fs::create_dir(&config_dir).unwrap();
+        let config_path = config_dir.join("config.toml");
+        let file = fs::File::create(config_path).unwrap();
+        file.set_len(MAX_APP_CONFIG_BYTES + 1).unwrap();
+
+        let error = ConfigManager::with_directories(&config_dir, root.0.join("wg")).unwrap_err();
+        assert!(error.to_string().contains("byte safety limit"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_hardlinked_application_config() {
+        let root = TestDirectory::new("hardlinked-app-config");
+        let config_dir = root.0.join("app-config");
+        fs::create_dir(&config_dir).unwrap();
+        let config_path = config_dir.join("config.toml");
+        fs::write(&config_path, CONFIG_TEMPLATE).unwrap();
+        fs::hard_link(&config_path, root.0.join("alias.toml")).unwrap();
+
+        let error = ConfigManager::with_directories(&config_dir, root.0.join("wg")).unwrap_err();
+        assert!(error.to_string().contains("exactly one hard link"));
     }
 
     #[cfg(unix)]

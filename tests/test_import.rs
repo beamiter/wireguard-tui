@@ -61,7 +61,7 @@ mod commands {
 #[allow(dead_code)]
 mod download;
 
-use download::{ConfigDownloader, ImportReport, MAX_WIREGUARD_CONFIG_SIZE};
+use download::{ConfigDownloader, ImportReport, MAX_DISCOVERED_CONFIGS, MAX_WIREGUARD_CONFIG_SIZE};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -91,12 +91,12 @@ impl Drop for TestDirectory {
 
 fn valid_config() -> &'static str {
     r#"[Interface]
-PrivateKey = client-private-key
+PrivateKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
 Address = 10.0.0.2/32
 DNS = 1.1.1.1
 
 [Peer]
-PublicKey = server-public-key
+PublicKey = AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=
 Endpoint = vpn.example.test:51820
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
@@ -144,6 +144,24 @@ fn scans_only_safe_regular_candidates_in_an_explicit_directory() {
 }
 
 #[test]
+fn scan_reports_an_explicit_candidate_resource_limit() {
+    let root = TestDirectory::new("scan-limit");
+    let downloads = root.join("downloads");
+    fs::create_dir(&downloads).unwrap();
+    for index in 0..=MAX_DISCOVERED_CONFIGS {
+        fs::write(downloads.join(format!("wg-{index}.conf")), "").unwrap();
+    }
+
+    let error = ConfigDownloader::with_downloads_dir(&downloads)
+        .scan_downloads()
+        .unwrap_err();
+    assert!(error.to_string().contains("configuration candidates"));
+    assert!(error
+        .to_string()
+        .contains(&MAX_DISCOVERED_CONFIGS.to_string()));
+}
+
+#[test]
 fn batch_import_reports_successes_and_security_failures() {
     let root = TestDirectory::new("batch");
     let downloads = root.join("downloads");
@@ -157,7 +175,7 @@ fn batch_import_reports_successes_and_security_failures() {
     fs::write(&valid_path, valid_config()).unwrap();
     fs::write(
         &hook_path,
-        "[Interface]\nPrivateKey = secret\nPostUp = id\n[Peer]\nPublicKey = peer\n",
+        "[Interface]\nPrivateKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\nPostUp = id\n[Peer]\nPublicKey = AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\n",
     )
     .unwrap();
     fs::write(&installer_failure_path, valid_config()).unwrap();
@@ -199,6 +217,61 @@ fn batch_import_reports_successes_and_security_failures() {
     }
 }
 
+#[test]
+fn batch_import_reports_duplicate_selections_without_installing_twice() -> Result<()> {
+    let root = TestDirectory::new("duplicate-selection");
+    let downloads = root.join("downloads");
+    let target = root.join("wireguard");
+    fs::create_dir(&downloads)?;
+    fs::create_dir(&target)?;
+    let selected = downloads.join("wg-once.conf");
+    let alternate_dir = root.join("alternate");
+    fs::create_dir(&alternate_dir)?;
+    let duplicate_target = alternate_dir.join("wg-once.conf");
+    fs::write(&selected, valid_config())?;
+    fs::write(&duplicate_target, valid_config())?;
+
+    let report = ConfigDownloader::with_downloads_dir(&downloads)
+        .import_configs(&[selected.clone(), duplicate_target.clone()], &target)?;
+    assert_eq!(report.imported, vec!["wg-once.conf"]);
+    assert_eq!(report.failures.len(), 1);
+    assert_eq!(report.failures[0].path, duplicate_target);
+    assert!(report.failures[0]
+        .error
+        .contains("Duplicate target interface"));
+    Ok(())
+}
+
+#[test]
+fn direct_import_rejects_malformed_and_ambiguous_keys() -> Result<()> {
+    let root = TestDirectory::new("invalid-keys");
+    let downloads = root.join("downloads");
+    let target = root.join("wireguard");
+    fs::create_dir(&downloads)?;
+    fs::create_dir(&target)?;
+    let downloader = ConfigDownloader::with_downloads_dir(&downloads);
+
+    let malformed = downloads.join("malformed.conf");
+    fs::write(
+        &malformed,
+        "[Interface]\nPrivateKey = not-a-key\n[Peer]\nPublicKey = AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\n",
+    )?;
+    let error = downloader.import_config(&malformed, &target).unwrap_err();
+    assert!(error.to_string().contains("canonical WireGuard key"));
+
+    let duplicate = downloads.join("duplicate.conf");
+    fs::write(
+        &duplicate,
+        "[Interface]\nPrivateKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\nPrivateKey = AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=\n[Peer]\nPublicKey = AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\n",
+    )?;
+    let error = downloader.import_config(&duplicate, &target).unwrap_err();
+    assert!(error.to_string().contains("repeats PrivateKey"));
+
+    assert!(!target.join("malformed.conf").exists());
+    assert!(!target.join("duplicate.conf").exists());
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn direct_import_rejects_a_symlink_before_installation() {
@@ -237,5 +310,27 @@ fn direct_import_enforces_the_size_limit_even_if_scan_is_bypassed() -> Result<()
     let error = downloader.import_config(&source, &target).unwrap_err();
     assert!(error.to_string().contains("byte limit"));
     assert!(!target.join("too-big.conf").exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn direct_import_rejects_hard_linked_private_key_files() -> Result<()> {
+    let root = TestDirectory::new("hard-link");
+    let downloads = root.join("downloads");
+    let target = root.join("wireguard");
+    fs::create_dir(&downloads)?;
+    fs::create_dir(&target)?;
+
+    let original = downloads.join("original.conf");
+    let linked = downloads.join("linked.conf");
+    fs::write(&original, valid_config())?;
+    fs::hard_link(&original, &linked)?;
+
+    let error = ConfigDownloader::with_downloads_dir(&downloads)
+        .import_config(&linked, &target)
+        .unwrap_err();
+    assert!(error.to_string().contains("multiple hard links"));
+    assert!(!target.join("linked.conf").exists());
     Ok(())
 }

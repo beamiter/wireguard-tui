@@ -1,4 +1,6 @@
+use crate::config::validate_interface_name;
 use anyhow::{anyhow, Context, Result};
+use std::collections::HashSet;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -48,6 +50,8 @@ END { exit bad ? 42 : 0 }
 "#;
 const PRIVILEGED_PATH_DIRS: [&str; 4] = ["/usr/sbin", "/usr/bin", "/sbin", "/bin"];
 const MAX_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAX_SECURE_CONFIG_BYTES: u64 = 64 * 1024;
+const MAX_ACTIVE_INTERFACES: usize = 256;
 
 pub struct CommandExecutor;
 
@@ -137,7 +141,7 @@ impl CommandExecutor {
         let mut command = Self::privileged_command("wg")?;
         command.args(["show", "interfaces"]);
         let output = Self::run_command(command, "list active WireGuard interfaces")?;
-        Ok(Self::parse_interface_names(&output))
+        Self::parse_interface_names(&output)
     }
 
     pub fn check_interface_exists(config_name: &str) -> Result<bool> {
@@ -307,12 +311,12 @@ impl CommandExecutor {
 
     fn inspect_secure_path_component(path: &Path, config_file: bool) -> Result<()> {
         let mut command = Self::privileged_command("stat")?;
-        command.args(["-c", "%u\t%a\t%F", "--"]).arg(path);
+        command.args(["-c", "%u\t%a\t%F\t%s", "--"]).arg(path);
         let output = Self::run_command(
             command,
             &format!("inspect security metadata for `{}`", path.display()),
         )?;
-        let (uid, mode, kind) = Self::parse_stat_metadata(&output)?;
+        let (uid, mode, kind, size) = Self::parse_stat_metadata(&output)?;
 
         if uid != 0 {
             return Err(anyhow!("`{}` is not owned by root", path.display()));
@@ -336,6 +340,12 @@ impl CommandExecutor {
                     path.display()
                 ));
             }
+            if size > MAX_SECURE_CONFIG_BYTES {
+                return Err(anyhow!(
+                    "WireGuard config `{}` exceeds the {MAX_SECURE_CONFIG_BYTES} byte inspection limit",
+                    path.display()
+                ));
+            }
         } else if kind != "directory" {
             return Err(anyhow!(
                 "WireGuard config ancestor `{}` is not a directory",
@@ -346,8 +356,8 @@ impl CommandExecutor {
         Ok(())
     }
 
-    fn parse_stat_metadata(output: &str) -> Result<(u32, u32, &str)> {
-        let mut fields = output.trim().splitn(3, '\t');
+    fn parse_stat_metadata(output: &str) -> Result<(u32, u32, &str, u64)> {
+        let mut fields = output.trim().splitn(4, '\t');
         let uid = fields
             .next()
             .ok_or_else(|| anyhow!("stat output omitted owner"))?
@@ -363,7 +373,12 @@ impl CommandExecutor {
         let kind = fields
             .next()
             .ok_or_else(|| anyhow!("stat output omitted file type"))?;
-        Ok((uid, mode, kind))
+        let size = fields
+            .next()
+            .ok_or_else(|| anyhow!("stat output omitted file size"))?
+            .parse::<u64>()
+            .context("stat returned an invalid file size")?;
+        Ok((uid, mode, kind, size))
     }
 
     pub fn list_config_names(dir: &Path) -> Result<Vec<String>> {
@@ -699,32 +714,62 @@ impl CommandExecutor {
                 let lowercase = line.to_ascii_lowercase();
                 if lowercase.contains("key is not the correct length or format") {
                     "WireGuard rejected <redacted key material>".to_string()
-                } else if line.contains('=')
-                    && [
+                } else {
+                    const SENSITIVE_LABELS: [&str; 13] = [
                         "privatekey",
+                        "private key",
                         "presharedkey",
+                        "preshared key",
+                        "pre-shared key",
                         "password",
                         "passwd",
                         "credential",
+                        "access_token",
+                        "api_key",
+                        "api key",
                         "token",
                         "secret",
-                        "api_key",
-                    ]
-                    .iter()
-                    .any(|marker| lowercase.contains(marker))
-                {
-                    let (key, _) = line.split_once('=').expect("assignment checked");
-                    format!("{key}= <redacted>")
-                } else {
-                    line.to_string()
+                    ];
+                    SENSITIVE_LABELS
+                        .iter()
+                        .filter_map(|marker| {
+                            lowercase.find(marker).map(|start| (start, marker.len()))
+                        })
+                        .filter(|(start, length)| {
+                            let preceding = lowercase[..*start].chars().next_back();
+                            let trailing = lowercase[*start + *length..].chars().next();
+                            !preceding.is_some_and(|value| value.is_ascii_alphanumeric())
+                                && trailing.is_some_and(|value| {
+                                    value == '=' || value == ':' || value.is_ascii_whitespace()
+                                })
+                        })
+                        .min_by_key(|(start, _)| *start)
+                        .map_or_else(
+                            || line.to_string(),
+                            |(start, length)| format!("{} <redacted>", &line[..start + length]),
+                        )
                 }
             })
             .collect::<Vec<_>>()
             .join("\n")
     }
 
-    fn parse_interface_names(output: &str) -> Vec<String> {
-        output.split_whitespace().map(ToOwned::to_owned).collect()
+    fn parse_interface_names(output: &str) -> Result<Vec<String>> {
+        let mut names = Vec::new();
+        let mut seen = HashSet::new();
+        for value in output.split_whitespace() {
+            validate_interface_name(value)
+                .context("wg returned an invalid active interface name")?;
+            if seen.insert(value.to_string()) {
+                names.push(value.to_string());
+                if names.len() > MAX_ACTIVE_INTERFACES {
+                    return Err(anyhow!(
+                        "wg returned more than {MAX_ACTIVE_INTERFACES} active interfaces"
+                    ));
+                }
+            }
+        }
+        Ok(names)
     }
 
     fn config_name_from_path(path: &Path) -> Result<String> {
@@ -876,7 +921,7 @@ impl CommandExecutor {
 
 #[cfg(test)]
 mod tests {
-    use super::CommandExecutor;
+    use super::{CommandExecutor, MAX_ACTIVE_INTERFACES};
     use std::io::Write;
     use std::path::Path;
     use std::process::{Command, Stdio};
@@ -914,9 +959,19 @@ mod tests {
     #[test]
     fn parses_all_active_interfaces_in_order() {
         assert_eq!(
-            CommandExecutor::parse_interface_names("wg-home wg-work\nwg-test\n"),
+            CommandExecutor::parse_interface_names("wg-home wg-work\nwg-test\n").unwrap(),
             ["wg-home", "wg-work", "wg-test"]
         );
+        assert_eq!(
+            CommandExecutor::parse_interface_names("wg0 wg0 wg1").unwrap(),
+            ["wg0", "wg1"]
+        );
+        assert!(CommandExecutor::parse_interface_names("wg0 ../escape").is_err());
+        let oversized = (0..=MAX_ACTIVE_INTERFACES)
+            .map(|index| format!("wg{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(CommandExecutor::parse_interface_names(&oversized).is_err());
     }
 
     #[test]
@@ -942,14 +997,17 @@ mod tests {
     #[test]
     fn command_diagnostics_redact_invalid_and_assigned_keys() {
         let diagnostic = CommandExecutor::redact_command_diagnostics(
-            "Key is not the correct length or format: `top-secret'\nPrivateKey = another-secret\nPassword=provider-secret\naccess_token=api-secret\nordinary failure",
+            "Key is not the correct length or format: `top-secret'\nPrivateKey = another-secret\nPassword=provider-secret\naccess_token=api-secret\nPresharedKey: colon-secret\ntoken whitespace-secret\nEndpoint: secret.example:51820\nordinary failure",
         );
         assert!(!diagnostic.contains("top-secret"));
         assert!(!diagnostic.contains("another-secret"));
         assert!(!diagnostic.contains("provider-secret"));
         assert!(!diagnostic.contains("api-secret"));
+        assert!(!diagnostic.contains("colon-secret"));
+        assert!(!diagnostic.contains("whitespace-secret"));
         assert!(diagnostic.contains("<redacted key material>"));
-        assert!(diagnostic.contains("Password= <redacted>"));
+        assert!(diagnostic.contains("Password <redacted>"));
+        assert!(diagnostic.contains("Endpoint: secret.example:51820"));
         assert!(diagnostic.contains("ordinary failure"));
     }
 
@@ -991,12 +1049,12 @@ mod tests {
     #[test]
     fn parses_security_metadata_without_file_content() {
         assert_eq!(
-            CommandExecutor::parse_stat_metadata("0\t600\tregular file\n").unwrap(),
-            (0, 0o600, "regular file")
+            CommandExecutor::parse_stat_metadata("0\t600\tregular file\t4096\n").unwrap(),
+            (0, 0o600, "regular file", 4096)
         );
         assert_eq!(
-            CommandExecutor::parse_stat_metadata("0\t755\tdirectory\n").unwrap(),
-            (0, 0o755, "directory")
+            CommandExecutor::parse_stat_metadata("0\t755\tdirectory\t8192\n").unwrap(),
+            (0, 0o755, "directory", 8192)
         );
         assert!(CommandExecutor::parse_stat_metadata("root 600 file").is_err());
     }
