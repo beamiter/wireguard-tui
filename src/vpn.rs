@@ -136,6 +136,9 @@ impl VpnManager {
                 if !interface_seen {
                     bail!("wg status output contains a peer before its interface record");
                 }
+                if value.is_empty() {
+                    bail!("wg status output contains an empty peer public key");
+                }
                 peer_count += 1;
                 if peer_count > MAX_STATUS_PEERS {
                     bail!("wg status output exceeds the {MAX_STATUS_PEERS} peer safety limit");
@@ -340,5 +343,14 @@ peer: peer-public-key=
     #[test]
     fn status_parser_rejects_empty_interface_public_key() {
         assert!(VpnManager::parse_status("interface: wg0\npublic key: \n", "wg0").is_err());
+    }
+
+    #[test]
+    fn status_parser_rejects_empty_peer_public_key() {
+        assert!(VpnManager::parse_status(
+            "interface: wg0\npublic key: abc=\npeer: \n",
+            "wg0"
+        )
+        .is_err());
     }
 }

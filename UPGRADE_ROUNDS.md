@@ -64,6 +64,8 @@ checked before data is copied into long-lived application state.
 25. **Status public-key presence contract.** Interface-scope `public key:`
     lines must carry non-empty values before they enter parsed status, closing
     a gap where a malformed `wg show` dump could advertise an empty key.
+26. **Peer public-key presence contract.** `peer:` lines must carry non-empty
+    values before they enter parsed status, closing the same gap for peer keys.
 
 Regression coverage lives beside the relevant modules plus
 `tests/test_import.rs`; the final acceptance commands are `cargo test`,
