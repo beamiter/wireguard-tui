@@ -61,6 +61,9 @@ checked before data is copied into long-lived application state.
 24. **Status label control-character contract.** `wg show` status parsing now
     rejects control characters in field labels as well as values, closing a
     diagnostic echo gap where poisoned label text could reach the UI.
+25. **Status public-key presence contract.** Interface-scope `public key:`
+    lines must carry non-empty values before they enter parsed status, closing
+    a gap where a malformed `wg show` dump could advertise an empty key.
 
 Regression coverage lives beside the relevant modules plus
 `tests/test_import.rs`; the final acceptance commands are `cargo test`,

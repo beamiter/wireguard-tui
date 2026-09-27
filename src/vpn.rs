@@ -167,6 +167,9 @@ impl VpnManager {
                     if !status.public_key.is_empty() {
                         bail!("wg status output contains duplicate interface public keys");
                     }
+                    if value.is_empty() {
+                        bail!("wg status output contains an empty interface public key");
+                    }
                     status.public_key = value.to_string();
                 }
                 "listening port" if peer_count == 0 => {
@@ -332,5 +335,10 @@ peer: peer-public-key=
     #[test]
     fn status_parser_rejects_control_characters_in_labels() {
         assert!(VpnManager::parse_status("inter\x01face: wg0\n", "wg0").is_err());
+    }
+
+    #[test]
+    fn status_parser_rejects_empty_interface_public_key() {
+        assert!(VpnManager::parse_status("interface: wg0\npublic key: \n", "wg0").is_err());
     }
 }
