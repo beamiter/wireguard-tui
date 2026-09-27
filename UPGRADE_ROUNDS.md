@@ -1,6 +1,6 @@
 # Upgrade rounds: parser, filesystem, and diagnostics
 
-This ledger records the twenty independently reviewable hardening increments in
+This ledger records the twenty-one independently reviewable hardening increments in
 the current upgrade batch.  The limits are deliberately conservative and are
 checked before data is copied into long-lived application state.
 
@@ -49,6 +49,9 @@ checked before data is copied into long-lived application state.
     avoiding duplicate user-visible state transitions.
 20. **Bounded import discovery.** Downloads scanning fails with an actionable
     error after 4096 directory entries or 256 eligible configurations.
+21. **Installed listing contract.** Privileged `find` output is reduced to valid
+    interface stems, stable-deduplicated, sorted, and capped at 256 names before
+    the list enters application state.
 
 Regression coverage lives beside the relevant modules plus
 `tests/test_import.rs`; the final acceptance commands are `cargo test`,

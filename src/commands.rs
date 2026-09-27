@@ -394,7 +394,7 @@ impl CommandExecutor {
             command,
             &format!("list WireGuard configurations in `{}`", dir.display()),
         )?;
-        Ok(Self::parse_config_names(&output))
+        Self::parse_config_names(&output)
     }
 
     fn privileged_command(program: &str) -> Result<Command> {
@@ -796,18 +796,30 @@ impl CommandExecutor {
             })
     }
 
-    fn parse_config_names(output: &str) -> Vec<String> {
-        let mut names: Vec<String> = output
-            .split('\0')
-            .filter(|path| !path.is_empty())
-            .filter_map(|path| Path::new(path).file_name())
-            .filter_map(|name| name.to_str())
-            .filter_map(|name| name.strip_suffix(".conf"))
-            .map(ToOwned::to_owned)
-            .collect();
+    fn parse_config_names(output: &str) -> Result<Vec<String>> {
+        let mut names = Vec::new();
+        let mut seen = HashSet::new();
+        for path in output.split('\0').filter(|path| !path.is_empty()) {
+            let Some(file_name) = Path::new(path).file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let Some(stem) = file_name.strip_suffix(".conf") else {
+                continue;
+            };
+            if validate_interface_name(stem).is_err() {
+                continue;
+            }
+            if seen.insert(stem.to_string()) {
+                names.push(stem.to_string());
+                if names.len() > MAX_ACTIVE_INTERFACES {
+                    return Err(anyhow!(
+                        "find returned more than {MAX_ACTIVE_INTERFACES} WireGuard configuration names"
+                    ));
+                }
+            }
+        }
         names.sort();
-        names.dedup();
-        names
+        Ok(names)
     }
 
     fn validated_temp_path(output: &str, parent: &Path, target: &Path) -> Result<PathBuf> {
@@ -981,11 +993,21 @@ mod tests {
     #[test]
     fn parses_sorted_unique_config_names_from_find_output() {
         let output = "/etc/wireguard/zeta.conf\0/etc/wireguard/alpha.conf\0\
-                      /etc/wireguard/alpha.conf\0/etc/wireguard/readme.txt\0";
+                      /etc/wireguard/alpha.conf\0/etc/wireguard/readme.txt\0\
+                      /etc/wireguard/this-name-is-way-too-long.conf\0";
         assert_eq!(
-            CommandExecutor::parse_config_names(output),
+            CommandExecutor::parse_config_names(output).unwrap(),
             ["alpha", "zeta"]
         );
+    }
+
+    #[test]
+    fn rejects_oversized_installed_config_listings() {
+        let output = (0..=MAX_ACTIVE_INTERFACES)
+            .map(|index| format!("/etc/wireguard/wg{index}.conf"))
+            .collect::<Vec<_>>()
+            .join("\0");
+        assert!(CommandExecutor::parse_config_names(&output).is_err());
     }
 
     #[test]
