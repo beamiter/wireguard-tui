@@ -58,6 +58,9 @@ checked before data is copied into long-lived application state.
 23. **Listing control-character contract.** Privileged `wg` and `find` listing
     lines reject embedded control characters before interface validation or
     stem extraction, matching the status parser's diagnostic safety rule.
+24. **Status label control-character contract.** `wg show` status parsing now
+    rejects control characters in field labels as well as values, closing a
+    diagnostic echo gap where poisoned label text could reach the UI.
 
 Regression coverage lives beside the relevant modules plus
 `tests/test_import.rs`; the final acceptance commands are `cargo test`,

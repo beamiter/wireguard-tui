@@ -126,7 +126,11 @@ impl VpnManager {
             if value.chars().any(char::is_control) {
                 bail!("wg status output contains control characters");
             }
-            let label = label.trim().to_ascii_lowercase();
+            let label = label.trim();
+            if label.chars().any(char::is_control) {
+                bail!("wg status output contains control characters");
+            }
+            let label = label.to_ascii_lowercase();
 
             if label == "peer" {
                 if !interface_seen {
@@ -323,5 +327,10 @@ peer: peer-public-key=
     #[test]
     fn status_parser_rejects_control_characters_in_values() {
         assert!(VpnManager::parse_status("interface: wg0\0suffix\n", "wg0").is_err());
+    }
+
+    #[test]
+    fn status_parser_rejects_control_characters_in_labels() {
+        assert!(VpnManager::parse_status("inter\x01face: wg0\n", "wg0").is_err());
     }
 }
