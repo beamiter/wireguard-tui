@@ -185,6 +185,9 @@ impl VpnManager {
                     if !status.listening_port.is_empty() {
                         bail!("wg status output contains duplicate listening ports");
                     }
+                    if value.is_empty() {
+                        bail!("wg status output contains an empty listening port");
+                    }
                     status.listening_port = value.to_string();
                 }
                 "endpoint" if in_first_peer && status.endpoint.is_empty() => {
@@ -360,5 +363,14 @@ peer: peer-public-key=
     #[test]
     fn status_parser_rejects_empty_interface_name() {
         assert!(VpnManager::parse_status("interface: \npublic key: abc=\n", "wg0").is_err());
+    }
+
+    #[test]
+    fn status_parser_rejects_empty_listening_port() {
+        assert!(VpnManager::parse_status(
+            "interface: wg0\npublic key: abc=\nlistening port: \n",
+            "wg0"
+        )
+        .is_err());
     }
 }

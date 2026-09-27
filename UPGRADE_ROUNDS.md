@@ -69,6 +69,9 @@ checked before data is copied into long-lived application state.
 27. **Interface name presence contract.** `interface:` lines must carry non-empty
     values before they enter parsed status, closing a gap where a malformed
     `wg show` dump could advertise an empty interface name.
+28. **Listening-port presence contract.** Interface-scope `listening port:` lines
+    must carry non-empty values before they enter parsed status, closing a gap
+    where a malformed `wg show` dump could advertise an empty port.
 
 Regression coverage lives beside the relevant modules plus
 `tests/test_import.rs`; the final acceptance commands are `cargo test`,
