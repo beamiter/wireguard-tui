@@ -758,10 +758,18 @@ impl CommandExecutor {
             .join("\n")
     }
 
+    fn reject_control_characters(value: &str, context: &str) -> Result<()> {
+        if value.chars().any(char::is_control) {
+            return Err(anyhow!("{context} contains control characters"));
+        }
+        Ok(())
+    }
+
     fn parse_interface_names(output: &str) -> Result<Vec<String>> {
         let mut names = Vec::new();
         let mut seen = HashSet::new();
         for value in output.split_whitespace() {
+            Self::reject_control_characters(value, "wg interface listing")?;
             validate_interface_name(value)
                 .context("wg returned an invalid active interface name")?;
             if seen.insert(value.to_string()) {
@@ -773,6 +781,7 @@ impl CommandExecutor {
                 }
             }
         }
+        names.sort();
         Ok(names)
     }
 
@@ -800,6 +809,7 @@ impl CommandExecutor {
         let mut names = Vec::new();
         let mut seen = HashSet::new();
         for path in output.split('\0').filter(|path| !path.is_empty()) {
+            Self::reject_control_characters(path, "find configuration listing")?;
             let Some(file_name) = Path::new(path).file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
@@ -973,10 +983,16 @@ mod tests {
     }
 
     #[test]
-    fn parses_all_active_interfaces_in_order() {
+    fn rejects_control_characters_in_listings() {
+        assert!(CommandExecutor::parse_interface_names("wg0\u{7}").is_err());
+        assert!(CommandExecutor::parse_config_names("/etc/wireguard/a.conf\u{1b}\0").is_err());
+    }
+
+    #[test]
+    fn parses_active_interfaces_sorted_and_deduplicated() {
         assert_eq!(
             CommandExecutor::parse_interface_names("wg-home wg-work\nwg-test\n").unwrap(),
-            ["wg-home", "wg-work", "wg-test"]
+            ["wg-home", "wg-test", "wg-work"]
         );
         assert_eq!(
             CommandExecutor::parse_interface_names("wg0 wg0 wg1").unwrap(),

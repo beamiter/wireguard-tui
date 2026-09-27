@@ -1,6 +1,6 @@
 # Upgrade rounds: parser, filesystem, and diagnostics
 
-This ledger records the twenty-one independently reviewable hardening increments in
+This ledger records the twenty-two independently reviewable hardening increments in
 the current upgrade batch.  The limits are deliberately conservative and are
 checked before data is copied into long-lived application state.
 
@@ -52,6 +52,12 @@ checked before data is copied into long-lived application state.
 21. **Installed listing contract.** Privileged `find` output is reduced to valid
     interface stems, stable-deduplicated, sorted, and capped at 256 names before
     the list enters application state.
+22. **Active-interface listing contract.** Parsed `wg` interface names are
+    validated, stable-deduplicated, sorted, and capped at 256 entries before
+    they enter application state, matching the installed-configuration listing.
+23. **Listing control-character contract.** Privileged `wg` and `find` listing
+    lines reject embedded control characters before interface validation or
+    stem extraction, matching the status parser's diagnostic safety rule.
 
 Regression coverage lives beside the relevant modules plus
 `tests/test_import.rs`; the final acceptance commands are `cargo test`,
