@@ -155,6 +155,9 @@ impl VpnManager {
                     if peer_count != 0 {
                         bail!("wg status output contains an interface after peer records");
                     }
+                    if value.is_empty() {
+                        bail!("wg status output contains an empty interface name");
+                    }
                     validate_interface_name(value)
                         .context("wg status output contains an invalid interface name")?;
                     if value != interface {
@@ -352,5 +355,10 @@ peer: peer-public-key=
             "wg0"
         )
         .is_err());
+    }
+
+    #[test]
+    fn status_parser_rejects_empty_interface_name() {
+        assert!(VpnManager::parse_status("interface: \npublic key: abc=\n", "wg0").is_err());
     }
 }
