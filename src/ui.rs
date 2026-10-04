@@ -696,16 +696,15 @@ fn shorten_key(key: &str) -> String {
 }
 
 fn sanitize_for_terminal(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if is_unsafe_terminal_character(character) {
-                '�'
-            } else {
-                character
-            }
-        })
-        .collect()
+    let mut sanitized = String::with_capacity(value.len());
+    for character in value.chars() {
+        sanitized.push(if is_unsafe_terminal_character(character) {
+            '�'
+        } else {
+            character
+        });
+    }
+    sanitized
 }
 
 fn is_unsafe_terminal_character(character: char) -> bool {
