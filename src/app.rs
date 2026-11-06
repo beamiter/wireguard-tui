@@ -1,5 +1,5 @@
 use crate::commands::CommandExecutor;
-use crate::config::{ConfigDetails, ConfigManager};
+use crate::config::{validate_endpoint, ConfigDetails, ConfigManager};
 use crate::download::{ConfigDownloader, ImportReport};
 use crate::vpn::{VpnManager, VpnStatus};
 use anyhow::{Context, Result};
@@ -12,6 +12,51 @@ const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const STATUS_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 const DETAILS_DEBOUNCE: Duration = Duration::from_millis(120);
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(10);
+const MAX_ENDPOINT_INPUT_BYTES: usize = 512;
+
+pub struct EndpointEditor {
+    pub server: String,
+    pub value: String,
+    /// Byte offset: endpoint input is restricted to printable ASCII.
+    pub cursor: usize,
+    original_config: String,
+}
+
+impl EndpointEditor {
+    pub fn new(server: String, original_config: String) -> Self {
+        let value = ConfigDetails::from_wireguard_config(&original_config)
+            .endpoint
+            .unwrap_or_default();
+        Self {
+            server,
+            cursor: value.len(),
+            value,
+            original_config,
+        }
+    }
+
+    pub fn insert(&mut self, character: char) {
+        if (character.is_ascii_graphic() || character == ' ')
+            && self.value.len() < MAX_ENDPOINT_INPUT_BYTES
+        {
+            self.value.insert(self.cursor, character);
+            self.cursor += 1;
+        }
+    }
+
+    pub fn backspace(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+            self.value.remove(self.cursor);
+        }
+    }
+
+    pub fn delete(&mut self) {
+        if self.cursor < self.value.len() {
+            self.value.remove(self.cursor);
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -99,6 +144,14 @@ enum OperationOutput {
         servers: std::result::Result<Vec<String>, String>,
     },
     Refreshed(Vec<String>),
+    EndpointLoaded {
+        server: String,
+        config: String,
+    },
+    EndpointSaved {
+        server: String,
+        details: ConfigDetails,
+    },
     Status {
         server: String,
         status: VpnStatus,
@@ -147,6 +200,7 @@ pub struct App {
     pub download_scroll: u16,
     pub status_scroll: u16,
     pub pending_delete: Option<String>,
+    pub endpoint_editor: Option<EndpointEditor>,
     pub spinner_frame: usize,
     pub config_manager: ConfigManager,
     pub downloader: ConfigDownloader,
@@ -205,6 +259,7 @@ impl App {
             download_scroll: 0,
             status_scroll: 0,
             pending_delete: None,
+            endpoint_editor: None,
             spinner_frame: 0,
             config_manager,
             downloader: ConfigDownloader::new(),
@@ -685,6 +740,77 @@ impl App {
         });
     }
 
+    pub fn request_endpoint_edit(&mut self) {
+        if self.is_busy() {
+            self.set_info("Wait for the current operation to finish");
+            return;
+        }
+        let Some(server) = self.selected_server().map(str::to_owned) else {
+            self.set_error("No server is selected");
+            return;
+        };
+        if self.connection.contains(&server) && self.connection.is_up() {
+            self.set_error(format!("Disconnect {server} before editing its endpoint"));
+            return;
+        }
+        let manager = self.config_manager.clone();
+        let task_server = server.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            let config = manager.load_endpoint_config(&task_server)?;
+            Ok(OperationOutput::EndpointLoaded {
+                server: task_server,
+                config,
+            })
+        });
+        self.pending_operation = Some(PendingOperation {
+            label: format!("Loading endpoint for {server}"),
+            connection_may_change: false,
+            fallback: self.connection.clone(),
+            task,
+        });
+    }
+
+    pub fn cancel_endpoint_edit(&mut self) {
+        if self.is_busy() {
+            self.set_info("Wait for the endpoint save to finish");
+            return;
+        }
+        self.endpoint_editor = None;
+        self.set_info("Endpoint edit cancelled");
+    }
+
+    pub fn save_endpoint(&mut self) {
+        if self.is_busy() {
+            return;
+        }
+        let Some(editor) = self.endpoint_editor.as_ref() else {
+            return;
+        };
+        let endpoint = editor.value.trim().to_string();
+        if let Err(error) = validate_endpoint(&endpoint, 1) {
+            self.set_error(format!("Invalid endpoint: {error}"));
+            return;
+        }
+        let server = editor.server.clone();
+        let original_config = editor.original_config.clone();
+        let manager = self.config_manager.clone();
+        let task_server = server.clone();
+        self.cancel_status_refresh();
+        let task = tokio::task::spawn_blocking(move || {
+            let details = manager.save_endpoint(&task_server, &original_config, &endpoint)?;
+            Ok(OperationOutput::EndpointSaved {
+                server: task_server,
+                details,
+            })
+        });
+        self.pending_operation = Some(PendingOperation {
+            label: format!("Saving endpoint for {server}"),
+            connection_may_change: false,
+            fallback: self.connection.clone(),
+            task,
+        });
+    }
+
     pub fn request_delete(&mut self) {
         if self.is_busy() {
             self.set_info("Wait for the current operation to finish");
@@ -1075,6 +1201,22 @@ impl App {
                 self.replace_servers(servers);
                 self.set_success("Configuration list refreshed");
             }
+            OperationOutput::EndpointLoaded { server, config } => {
+                self.endpoint_editor = Some(EndpointEditor::new(server, config));
+                self.dismiss_message();
+            }
+            OperationOutput::EndpointSaved { server, details } => {
+                self.endpoint_editor = None;
+                if self.selected_server() == Some(server.as_str()) {
+                    if let Some(task) = self.details_task.take() {
+                        task.task.abort();
+                    }
+                    self.details_request = None;
+                    self.selected_details = Some(details);
+                    self.selected_details_error = None;
+                }
+                self.set_success(format!("Endpoint saved for {server}; connect to use it"));
+            }
             OperationOutput::Status { server, status, ip } => {
                 self.connection = ConnectionState::Connected(server);
                 self.status = status;
@@ -1382,7 +1524,36 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, ConnectionState};
+    use super::{App, ConnectionState, EndpointEditor, MAX_ENDPOINT_INPUT_BYTES};
+
+    #[test]
+    fn endpoint_editor_prefills_first_peer_and_edits_at_the_cursor() {
+        let mut editor = EndpointEditor::new(
+            "wg0".into(),
+            "[Peer]\nEndpoint = old.test:1234\n[Peer]\nEndpoint = second.test:5678\n".into(),
+        );
+        assert_eq!(editor.value, "old.test:1234");
+        assert_eq!(editor.cursor, editor.value.len());
+        editor.cursor = 0;
+        editor.backspace();
+        editor.delete();
+        editor.insert('g');
+        assert_eq!(editor.value, "gld.test:1234");
+        editor.cursor = editor.value.len();
+        editor.delete();
+        editor.backspace();
+        editor.insert('5');
+        assert_eq!(editor.value, "gld.test:1235");
+        let value = editor.value.clone();
+        for character in ['\n', '\r', '\u{1b}', '中'] {
+            editor.insert(character);
+        }
+        assert_eq!(editor.value, value);
+        editor.value = "x".repeat(MAX_ENDPOINT_INPUT_BYTES);
+        editor.cursor = editor.value.len();
+        editor.insert('y');
+        assert_eq!(editor.value.len(), MAX_ENDPOINT_INPUT_BYTES);
+    }
 
     #[test]
     fn connection_state_exposes_one_consistent_server() {

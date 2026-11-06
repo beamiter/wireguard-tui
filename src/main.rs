@@ -160,6 +160,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         {
             app.cancel_delete();
         }
+        if app.endpoint_editor.is_some()
+            && key.kind == KeyEventKind::Press
+            && key.code == KeyCode::Esc
+        {
+            app.cancel_endpoint_edit();
+        }
         return false;
     }
 
@@ -170,6 +176,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             | KeyModifiers::HYPER
             | KeyModifiers::META,
     ) {
+        return false;
+    }
+
+    if app.endpoint_editor.is_some() {
+        handle_endpoint_key(app, key);
         return false;
     }
 
@@ -251,10 +262,43 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('o') => app.show_download(),
         KeyCode::Char('i') => app.handle_import(),
         KeyCode::Char('d') => app.request_delete(),
+        KeyCode::Char('e') => app.request_endpoint_edit(),
         KeyCode::Char('s') => app.show_status(),
         KeyCode::Char('r') => app.refresh_all(),
         KeyCode::Char('/') => app.begin_search(),
         KeyCode::Char('?') => app.current_screen = Screen::Help,
+        _ => {}
+    }
+}
+
+fn handle_endpoint_key(app: &mut App, key: KeyEvent) {
+    if key.kind == KeyEventKind::Press {
+        match key.code {
+            KeyCode::Esc => {
+                app.cancel_endpoint_edit();
+                return;
+            }
+            KeyCode::Enter => {
+                app.save_endpoint();
+                return;
+            }
+            _ => {}
+        }
+    }
+    if app.is_busy() {
+        return;
+    }
+    let Some(editor) = app.endpoint_editor.as_mut() else {
+        return;
+    };
+    match key.code {
+        KeyCode::Char(character) => editor.insert(character),
+        KeyCode::Backspace => editor.backspace(),
+        KeyCode::Delete => editor.delete(),
+        KeyCode::Left => editor.cursor = editor.cursor.saturating_sub(1),
+        KeyCode::Right => editor.cursor = (editor.cursor + 1).min(editor.value.len()),
+        KeyCode::Home => editor.cursor = 0,
+        KeyCode::End => editor.cursor = editor.value.len(),
         _ => {}
     }
 }

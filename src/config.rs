@@ -211,7 +211,7 @@ fn validate_port(value: &str, label: &str, line_number: usize, allow_zero: bool)
     Ok(())
 }
 
-fn validate_endpoint(value: &str, line_number: usize) -> Result<()> {
+pub fn validate_endpoint(value: &str, line_number: usize) -> Result<()> {
     let (host, port, bracketed) = if let Some(without_open_bracket) = value.strip_prefix('[') {
         let (host, port) = without_open_bracket
             .split_once("]:")
@@ -836,6 +836,33 @@ impl ConfigManager {
         validate_wireguard_client_config(&content)
     }
 
+    /// Return only a redacted snapshot. Saving compares it again so a stale
+    /// editor cannot silently overwrite another configuration edit.
+    pub fn load_endpoint_config(&self, name: &str) -> Result<String> {
+        let path = self.checked_config_path(name)?;
+        CommandExecutor::ensure_secure_config_path(&path)?;
+        let content = self.read_config_for_inspection(name)?;
+        validate_wireguard_client_config(&content)?;
+        Ok(content)
+    }
+
+    pub fn save_endpoint(
+        &self,
+        name: &str,
+        original_config: &str,
+        endpoint: &str,
+    ) -> Result<ConfigDetails> {
+        let current = self.load_endpoint_config(name)?;
+        if current != original_config {
+            bail!("Configuration changed while editing; cancel and reopen the endpoint editor");
+        }
+        let (script, updated) = endpoint_edit(&current, endpoint)?;
+        let details = validate_wireguard_client_config(&updated)?;
+        let path = self.checked_config_path(name)?;
+        CommandExecutor::edit_config_endpoint(&path, &script)?;
+        Ok(details)
+    }
+
     fn read_config_for_inspection(&self, name: &str) -> Result<String> {
         let path = self.checked_config_path(name)?;
         match read_installed_config_limited(&path) {
@@ -848,6 +875,73 @@ impl ConfigManager {
             Err(error) => Err(error).with_context(|| format!("Failed to read {}", path.display())),
         }
     }
+}
+
+/// Build a line-specific sed edit from a validated, redacted snapshot. Only
+/// the first peer (the one displayed in Details) is changed; secrets remain
+/// inside the privileged sed process and never become replacement bytes.
+fn endpoint_edit(content: &str, endpoint: &str) -> Result<(String, String)> {
+    validate_endpoint(endpoint, 1)?;
+    validate_wireguard_client_config(content)?;
+    let lines: Vec<&str> = content.split_inclusive('\n').collect();
+    let peer_start = lines
+        .iter()
+        .position(|line| section_from_line(config_line(line)) == Some(ConfigSection::Peer))
+        .ok_or_else(|| anyhow!("Configuration has no peer to edit"))?;
+    let peer_end = lines
+        .iter()
+        .enumerate()
+        .skip(peer_start + 1)
+        .find(|(_, line)| section_from_line(config_line(line)).is_some())
+        .map_or(lines.len(), |(index, _)| index);
+    let existing = (peer_start + 1..peer_end).find(|&index| {
+        config_line(lines[index])
+            .split_once('=')
+            .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case("endpoint"))
+    });
+
+    let (index, replacement, script) = if let Some(index) = existing {
+        let segment = lines[index];
+        let line = segment.trim_end_matches(['\r', '\n']);
+        let equals = line.find('=').expect("endpoint assignment");
+        let comment = line.find('#').unwrap_or(line.len());
+        let value_start =
+            equals + 1 + line[equals + 1..].len() - line[equals + 1..].trim_start().len();
+        let value_end = line[..comment].trim_end().len();
+        let ending = &segment[line.len()..];
+        let replacement = format!("{}{endpoint}{}", &line[..value_start], &line[value_end..]);
+        // In the validated endpoint alphabet, only dots and IPv6 brackets
+        // have a meaning in a basic regex. Replace the first occurrence on
+        // this assignment line, leaving comments and whitespace in the file
+        // rather than copying them into a privileged command's arguments.
+        let pattern = line[value_start..value_end]
+            .replace('.', "\\.")
+            .replace('[', "\\[")
+            .replace(']', "\\]");
+        (
+            index,
+            format!("{replacement}{ending}"),
+            format!("{}s|{pattern}|{endpoint}|", index + 1),
+        )
+    } else {
+        let header = lines[peer_start];
+        let cr = if header.trim_end_matches('\n').ends_with('\r') {
+            "\r"
+        } else {
+            ""
+        };
+        let separator = if header.ends_with('\n') { "" } else { "\n" };
+        (
+            peer_start,
+            format!("{header}{separator}Endpoint = {endpoint}{cr}\n"),
+            format!("{}a\\\nEndpoint = {endpoint}{cr}", peer_start + 1),
+        )
+    };
+    let mut updated = lines[..index].concat();
+    updated.push_str(&replacement);
+    updated.extend(lines[index + 1..].iter().copied());
+    validate_wireguard_client_config(&updated)?;
+    Ok((script, updated))
 }
 
 fn atomic_replace_app_config(path: &Path, contents: &[u8]) -> std::io::Result<()> {
@@ -1000,10 +1094,10 @@ fn set_private_file_permissions(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        read_installed_config_limited, redact_wireguard_secrets, validate_interface_name,
-        validate_wireguard_client_config, validate_wireguard_client_config_for_import, AppConfig,
-        ConfigDetails, ConfigManager, CONFIG_TEMPLATE, MAX_APP_CONFIG_BYTES,
-        MAX_VALIDATED_CONFIG_BYTES, ZERO_WIREGUARD_KEY,
+        endpoint_edit, read_installed_config_limited, redact_wireguard_secrets,
+        validate_interface_name, validate_wireguard_client_config,
+        validate_wireguard_client_config_for_import, AppConfig, ConfigDetails, ConfigManager,
+        CONFIG_TEMPLATE, MAX_APP_CONFIG_BYTES, MAX_VALIDATED_CONFIG_BYTES, ZERO_WIREGUARD_KEY,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -1240,6 +1334,85 @@ AllowedIPs = 10.0.0.0/8
         format!(
             "[Interface]\nPrivateKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\n{interface_fields}[Peer]\nPublicKey = AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\n{peer_fields}"
         )
+    }
+
+    #[test]
+    fn endpoint_edits_preserve_secrets_comments_other_peers_and_line_endings() {
+        let original = minimal_config(
+            "Address = 10.0.0.2/32\n",
+            "  eNdPoInT\t= old.example:1234  # edge & backup | C:\\vpn\nAllowedIPs = 0.0.0.0/0\n\n[Peer]\nPublicKey = AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=\nEndpoint = second.example:51820\n",
+        );
+        for crlf in [false, true] {
+            for final_newline in [false, true] {
+                let mut original = original.clone();
+                if !final_newline {
+                    original.pop();
+                }
+                if crlf {
+                    original = original.replace('\n', "\r\n");
+                }
+                let inspected = redact_wireguard_secrets(&original);
+                let (script, updated) = endpoint_edit(&inspected, "[2001:db8::1]:443").unwrap();
+                assert!(!script.contains("PrivateKey"));
+                assert!(!script.contains("backup"));
+                assert_eq!(
+                    updated,
+                    inspected.replace("old.example:1234", "[2001:db8::1]:443")
+                );
+
+                // Exercise the exact script used across the privilege boundary
+                // against unredacted bytes, without sudo or machine VPN state.
+                let root = TestDirectory::new("endpoint-edit");
+                let path = root.0.join("wg0.conf");
+                fs::write(&path, &original).unwrap();
+                #[cfg(unix)]
+                fs::set_permissions(
+                    &path,
+                    fs::Permissions::from_mode(if crlf { 0o400 } else { 0o600 }),
+                )
+                .unwrap();
+                let result = std::process::Command::new("sed")
+                    .args(["-i", "-e", &script, "--"])
+                    .arg(&path)
+                    .output()
+                    .unwrap();
+                assert!(result.status.success());
+                assert!(result.stdout.is_empty());
+                assert!(result.stderr.is_empty());
+                assert_eq!(
+                    fs::read_to_string(&path).unwrap(),
+                    original.replace("old.example:1234", "[2001:db8::1]:443")
+                );
+                #[cfg(unix)]
+                assert_eq!(
+                    fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                    if crlf { 0o400 } else { 0o600 }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn endpoint_edits_add_missing_first_peer_endpoint_and_reject_injection() {
+        let original = minimal_config("", "AllowedIPs = 10.0.0.0/8\n\n[Peer]\nPublicKey = AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=\nEndpoint = second.example:51820\n");
+        let (_, updated) = endpoint_edit(&original, "192.0.2.8:51820").unwrap();
+        assert_eq!(
+            updated,
+            original.replacen("[Peer]\n", "[Peer]\nEndpoint = 192.0.2.8:51820\n", 1)
+        );
+        assert!(updated.contains("Endpoint = second.example:51820"));
+        for invalid in [
+            "",
+            "example.test",
+            "host:0",
+            "host:65536",
+            "2001:db8::1:443",
+            "host:443\nPostUp = id",
+            "evil&host:443",
+            "host:443|e id",
+        ] {
+            assert!(endpoint_edit(&original, invalid).is_err());
+        }
     }
 
     #[test]

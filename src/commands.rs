@@ -269,6 +269,28 @@ impl CommandExecutor {
         Ok(())
     }
 
+    pub fn edit_config_endpoint(target: &Path, script: &str) -> Result<()> {
+        let config_name = Self::config_name_from_path(target)?;
+        validate_interface_name(&config_name)?;
+        Self::ensure_secure_config_path(target)?;
+        if Self::get_active_vpns()?
+            .iter()
+            .any(|name| name == &config_name)
+        {
+            return Err(anyhow!(
+                "Disconnect {config_name} before editing its endpoint"
+            ));
+        }
+
+        // GNU sed -i writes a same-directory temporary file and atomically
+        // renames it, retaining the root owner and original private mode.
+        // Neither the original keys nor edited file contents are captured.
+        let mut command = Self::privileged_command("sed")?;
+        command.args(["-i", "-e", script, "--"]).arg(target);
+        Self::run_command(command, &format!("save endpoint for `{config_name}`"))?;
+        Ok(())
+    }
+
     pub fn read_file(path: &Path) -> Result<String> {
         // Redaction happens inside the privileged process. Private material therefore never
         // crosses back into the unprivileged TUI process through captured stdout.

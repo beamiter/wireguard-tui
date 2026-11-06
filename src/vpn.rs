@@ -353,11 +353,9 @@ peer: peer-public-key=
 
     #[test]
     fn status_parser_rejects_empty_peer_public_key() {
-        assert!(VpnManager::parse_status(
-            "interface: wg0\npublic key: abc=\npeer: \n",
-            "wg0"
-        )
-        .is_err());
+        assert!(
+            VpnManager::parse_status("interface: wg0\npublic key: abc=\npeer: \n", "wg0").is_err()
+        );
     }
 
     #[test]

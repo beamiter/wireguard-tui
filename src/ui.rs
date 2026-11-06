@@ -1,4 +1,4 @@
-use crate::app::{App, ConnectionState, Message, Screen};
+use crate::app::{App, ConnectionState, EndpointEditor, Message, Screen};
 use crate::config::ConfigDetails;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
@@ -46,6 +46,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     if let Some(server) = app.pending_delete.as_deref() {
         draw_delete_confirmation(frame, area, server);
+    }
+    if let Some(editor) = app.endpoint_editor.as_ref() {
+        draw_endpoint_editor(frame, area, editor, app.is_busy());
     }
 }
 
@@ -552,6 +555,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         help_line("r", "Refresh configuration and status"),
         help_line("o / i", "Download instructions / import configs"),
         help_line("s", "Connection details and public IP"),
+        help_line("e", "Edit the selected config's first peer endpoint"),
         help_line("d", "Delete after explicit confirmation"),
         help_line("Esc", "Go back, clear search, or dismiss an error"),
         help_line("q / Ctrl+C", "Quit"),
@@ -596,14 +600,20 @@ fn draw_notice(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_shortcuts(frame: &mut Frame, area: Rect, app: &App) {
-    let text = if app.pending_delete.is_some() {
+    let text = if app.endpoint_editor.is_some() {
+        if app.is_busy() {
+            "Saving endpoint | please wait"
+        } else {
+            "Enter save | Esc cancel | ←→ Home/End move cursor | Backspace/Delete erase"
+        }
+    } else if app.pending_delete.is_some() {
         "y/Enter confirm delete | n/Esc cancel"
     } else if app.is_busy() {
         "Background operation active | navigation and Esc remain available"
     } else {
         match app.current_screen {
             Screen::Main => {
-                "↑↓/jk navigate | Enter connect | / search | r refresh | o download | i import | d delete | s status | ? help | q quit"
+                "↑↓/jk navigate | Enter connect | / search | e endpoint | r refresh | o download | i import | d delete | s status | ? help | q quit"
             }
             Screen::Download => "↑↓ scroll | b open browser | i import | Esc back | q quit",
             Screen::Import if app.import_configs.is_empty() => {
@@ -623,6 +633,64 @@ fn draw_shortcuts(frame: &mut Frame, area: Rect, app: &App) {
             .wrap(Wrap { trim: true }),
         area,
     );
+}
+
+fn draw_endpoint_editor(frame: &mut Frame, area: Rect, editor: &EndpointEditor, busy: bool) {
+    let popup = centered_rect(94, 13, area);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Block::default()
+            .title(" Edit Endpoint ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(ACCENT)),
+        popup,
+    );
+    let inner = popup.inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    let sections = Layout::default()
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Length(3),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                sanitize_for_terminal(&editor.server),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from("Edits the first [Peer]; takes effect on the next connection."),
+            Line::from("Format: host:port or [IPv6]:port (1-65535)"),
+        ])
+        .wrap(Wrap { trim: false }),
+        sections[0],
+    );
+    let input = sections[1];
+    let visible_width = input.width.saturating_sub(2) as usize;
+    let offset = editor
+        .cursor
+        .saturating_sub(visible_width.saturating_sub(1));
+    frame.render_widget(
+        Paragraph::new(editor.value.as_str())
+            .scroll((0, offset as u16))
+            .block(Block::default().title(" Endpoint ").borders(Borders::ALL)),
+        input,
+    );
+    frame.render_widget(
+        Paragraph::new(if busy {
+            "Saving endpoint..."
+        } else {
+            "Enter: save    Esc: cancel\nLeft/Right, Home/End: move    Backspace/Delete: erase"
+        })
+        .wrap(Wrap { trim: false }),
+        sections[2],
+    );
+    if !busy && visible_width > 0 {
+        frame.set_cursor_position((input.x + 1 + (editor.cursor - offset) as u16, input.y + 1));
+    }
 }
 
 fn draw_delete_confirmation(frame: &mut Frame, area: Rect, server: &str) {
@@ -858,6 +926,43 @@ mod tests {
             .symbol()
             .chars()
             .all(|character| !is_unsafe_terminal_character(character))));
+    }
+
+    #[test]
+    fn endpoint_editor_fits_at_minimum_size_and_scrolls_long_values() {
+        let mut editor = EndpointEditor::new("server-1234567".into(), String::new());
+        let backend = TestBackend::new(MIN_TERMINAL_WIDTH, MIN_TERMINAL_HEIGHT);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        for (value, cursor) in [
+            ("vpn.example:51820".to_string(), 4),
+            (format!("{}:51820", "x".repeat(253)), 259),
+        ] {
+            editor.value = value;
+            editor.cursor = cursor;
+            terminal
+                .draw(|frame| draw_endpoint_editor(frame, frame.area(), &editor, false))
+                .unwrap();
+            let rendered = buffer_text(terminal.backend().buffer());
+            for text in [
+                "Edit Endpoint",
+                "server-1234567",
+                "first [Peer]",
+                "Format: host:port",
+                "Enter: save",
+                "Esc: cancel",
+                "Home/End",
+                "Backspace/Delete",
+            ] {
+                assert!(rendered.contains(text), "missing {text}");
+            }
+            if cursor == 259 {
+                assert!(rendered.contains(":51820"));
+            } else {
+                assert!(rendered.contains("vpn.example:51820"));
+            }
+            let position = terminal.get_cursor_position().unwrap();
+            assert!(position.x < MIN_TERMINAL_WIDTH && position.y < MIN_TERMINAL_HEIGHT);
+        }
     }
 
     #[test]

@@ -38,6 +38,15 @@ mod commands {
             Ok(())
         }
 
+        pub fn edit_config_endpoint(path: &Path, script: &str) -> Result<()> {
+            let status = std::process::Command::new("sed")
+                .args(["-i", "-e", script, "--"])
+                .arg(path)
+                .status()?;
+            anyhow::ensure!(status.success(), "endpoint editor failed");
+            Ok(())
+        }
+
         pub fn open_url(_url: &str) -> Result<()> {
             Ok(())
         }
@@ -101,6 +110,79 @@ Endpoint = vpn.example.test:51820
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 "#
+}
+
+#[test]
+fn endpoint_save_keeps_unredacted_keys_and_refreshes_details() -> Result<()> {
+    let root = TestDirectory::new("endpoint-save");
+    let target = root.join("wireguard");
+    fs::create_dir(&target)?;
+    let path = target.join("wg0.conf");
+    fs::write(&path, valid_config())?;
+    let manager = config::ConfigManager::with_directories(root.join("app"), &target)?;
+    let snapshot = manager.load_endpoint_config("wg0")?;
+    assert!(!snapshot.contains("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="));
+    let details = manager.save_endpoint("wg0", &snapshot, "[2001:db8::8]:443")?;
+    assert_eq!(details.endpoint.as_deref(), Some("[2001:db8::8]:443"));
+    assert_eq!(
+        fs::read_to_string(&path)?,
+        valid_config().replace("vpn.example.test:51820", "[2001:db8::8]:443")
+    );
+    let snapshot = manager.load_endpoint_config("wg0")?;
+    manager.save_endpoint("wg0", &snapshot, "new.example:65535")?;
+    assert_eq!(
+        fs::read_to_string(path)?,
+        valid_config().replace("vpn.example.test:51820", "new.example:65535")
+    );
+    Ok(())
+}
+
+#[test]
+fn endpoint_save_adds_a_missing_endpoint_with_both_line_endings() -> Result<()> {
+    for newline in ["\n", "\r\n"] {
+        let root = TestDirectory::new("endpoint-missing");
+        let target = root.join("wireguard");
+        fs::create_dir(&target)?;
+        let path = target.join("wg0.conf");
+        let original = valid_config()
+            .replace("Endpoint = vpn.example.test:51820\n", "")
+            .replace('\n', newline);
+        fs::write(&path, &original)?;
+        let manager = config::ConfigManager::with_directories(root.join("app"), &target)?;
+        let snapshot = manager.load_endpoint_config("wg0")?;
+        let details = manager.save_endpoint("wg0", &snapshot, "192.0.2.8:51820")?;
+        assert_eq!(details.endpoint.as_deref(), Some("192.0.2.8:51820"));
+        assert_eq!(
+            fs::read_to_string(path)?,
+            original.replacen(
+                &format!("[Peer]{newline}"),
+                &format!("[Peer]{newline}Endpoint = 192.0.2.8:51820{newline}"),
+                1,
+            )
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn endpoint_save_rejects_stale_and_invalid_edits_without_changing_the_file() -> Result<()> {
+    let root = TestDirectory::new("endpoint-stale");
+    let target = root.join("wireguard");
+    fs::create_dir(&target)?;
+    let path = target.join("wg0.conf");
+    fs::write(&path, valid_config())?;
+    let manager = config::ConfigManager::with_directories(root.join("app"), &target)?;
+    let snapshot = manager.load_endpoint_config("wg0")?;
+    assert!(manager.save_endpoint("wg0", &snapshot, "host:0").is_err());
+    assert_eq!(fs::read_to_string(&path)?, valid_config());
+    let changed = valid_config().replace("vpn.example.test:51820", "other.example:51820");
+    fs::write(&path, &changed)?;
+    let error = manager
+        .save_endpoint("wg0", &snapshot, "new.example:443")
+        .unwrap_err();
+    assert!(error.to_string().contains("Configuration changed"));
+    assert_eq!(fs::read_to_string(path)?, changed);
+    Ok(())
 }
 
 fn assert_send<T: Send>() {}
